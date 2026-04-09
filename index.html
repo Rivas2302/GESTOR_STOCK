@@ -1,0 +1,2344 @@
+<!--
+-- SQL FOR SUPABASE SQL EDITOR --
+
+-- 1. Create Tables
+CREATE TABLE employees (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE categories (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE items (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT NOT NULL,
+  code TEXT NOT NULL UNIQUE,
+  category_id UUID REFERENCES categories(id),
+  description TEXT,
+  quantity INT NOT NULL DEFAULT 0 CHECK (quantity >= 0),
+  buy_price DECIMAL DEFAULT 0,
+  sale_price DECIMAL,
+  currency TEXT DEFAULT 'ARS' CHECK (currency IN ('ARS', 'USD')),
+  formula_id UUID REFERENCES price_formulas(id),
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE price_formulas (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT NOT NULL,
+  currency TEXT NOT NULL CHECK (currency IN ('ARS', 'USD')),
+  multipliers JSONB NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE movements (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  item_id UUID REFERENCES items(id) ON DELETE CASCADE,
+  type TEXT NOT NULL CHECK (type IN ('entrada', 'salida')),
+  quantity INT NOT NULL CHECK (quantity > 0),
+  employee_id UUID REFERENCES employees(id),
+  notes TEXT,
+  timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- 2. Insert Sample Data
+INSERT INTO employees (name) VALUES 
+('Alice Johnson'), 
+('Bob Smith'), 
+('Charlie Davis'), 
+('Diana Prince');
+
+INSERT INTO categories (name) VALUES 
+('Cameras'), 
+('Lenses'), 
+('Cables'), 
+('Alarms'), 
+('Switches'), 
+('Links'), 
+('Audio'), 
+('Lighting'), 
+('Accessories');
+
+-- Get category IDs for insertion (assuming order of insertion)
+DO $$
+DECLARE
+  cam_id UUID := (SELECT id FROM categories WHERE name = 'Cameras');
+  len_id UUID := (SELECT id FROM categories WHERE name = 'Lenses');
+  cab_id UUID := (SELECT id FROM categories WHERE name = 'Cables');
+  swi_id UUID := (SELECT id FROM categories WHERE name = 'Switches');
+BEGIN
+  INSERT INTO items (name, code, category_id, description, status) VALUES 
+  ('Sony Alpha A7 IV', 'CAM-001', cam_id, 'Full-frame mirrorless camera', 'available'),
+  ('Canon EOS R5', 'CAM-002', cam_id, 'High-resolution mirrorless camera', 'in_use'),
+  ('Sony 24-70mm f/2.8 GM II', 'LEN-001', len_id, 'Standard zoom lens', 'available'),
+  ('Canon RF 50mm f/1.2L', 'LEN-002', len_id, 'Prime lens', 'under_repair'),
+  ('XLR Cable 10m', 'CAB-001', cab_id, 'High-quality audio cable', 'available'),
+  ('HDMI 2.1 Cable 2m', 'CAB-002', cab_id, 'Ultra high speed HDMI', 'available'),
+  ('Ubiquiti EdgeSwitch 24', 'SWI-001', swi_id, '24-port managed PoE switch', 'in_use'),
+  ('Cisco Catalyst 2960', 'SWI-002', swi_id, 'Legacy network switch', 'decommissioned');
+END $$;
+
+-- Set initial holders for 'in_use' items
+UPDATE items SET current_holder_id = (SELECT id FROM employees WHERE name = 'Alice Johnson') WHERE code = 'CAM-002';
+UPDATE items SET current_holder_id = (SELECT id FROM employees WHERE name = 'Bob Smith') WHERE code = 'SWI-001';
+
+-- Insert initial movements
+INSERT INTO movements (item_id, type, employee_id, notes) VALUES 
+((SELECT id FROM items WHERE code = 'CAM-002'), 'checkout', (SELECT id FROM employees WHERE name = 'Alice Johnson'), 'Field shoot in London'),
+((SELECT id FROM items WHERE code = 'SWI-001'), 'checkout', (SELECT id FROM employees WHERE name = 'Bob Smith'), 'Server room upgrade');
+
+-->
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VaultStock - Gestión de Equipos</title>
+    <!-- Libraries -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" crossorigin></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" crossorigin></script>
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js" crossorigin></script>
+    <style>
+        :root {
+            --bg: #0f0f0f;
+            --card: #1a1a1a;
+            --border: #2a2a2a;
+            --accent: #3b82f6;
+            --text: #e5e7eb;
+            --text-dim: #9ca3af;
+            --available: #10b981;
+            --in-use: #f59e0b;
+            --under-repair: #f97316;
+            --decommissioned: #ef4444;
+            --radius: 12px;
+            --transition: 200ms ease;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg);
+            color: var(--text);
+            line-height: 1.5;
+            overflow-x: hidden;
+        }
+
+        /* Layout */
+        .app-container {
+            display: flex;
+            min-height: 100vh;
+        }
+
+        .sidebar {
+            width: 260px;
+            background: #111;
+            border-right: 1px solid var(--border);
+            padding: 2rem 1rem;
+            display: flex;
+            flex-direction: column;
+            position: sticky;
+            top: 0;
+            height: 100vh;
+        }
+
+        .main-content {
+            flex: 1;
+            padding: 2rem;
+            max-width: 1200px;
+            margin: 0 auto;
+            width: 100%;
+        }
+
+        /* Navigation */
+        .nav-brand {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            padding: 0 0.5rem;
+            margin-bottom: 2.5rem;
+        }
+
+        .nav-brand-text {
+            font-size: 1.3rem;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+            color: var(--accent);
+            line-height: 1.2;
+            word-wrap: break-word;
+        }
+
+        #sidebar-logo-container {
+            width: 56px !important;
+            height: 56px !important;
+            border-radius: 50% !important;
+            border: 2px solid var(--accent) !important;
+            overflow: hidden !important;
+            flex-shrink: 0 !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        #sidebar-logo-container svg,
+        #sidebar-logo-container img {
+            width: 100% !important;
+            height: 100% !important;
+            object-fit: cover !important;
+            display: block !important;
+        }
+
+        .nav-links {
+            list-style: none;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            padding: 0.875rem 1rem;
+            border-radius: var(--radius);
+            cursor: pointer;
+            transition: var(--transition);
+            color: var(--text-dim);
+            text-decoration: none;
+            font-weight: 500;
+        }
+
+        .nav-item:hover, .nav-item.active {
+            background: var(--card);
+            color: white;
+        }
+
+        .nav-item.active {
+            background: rgba(59, 130, 246, 0.1);
+            color: var(--accent);
+        }
+
+        .nav-item svg {
+            width: 20px;
+            height: 20px;
+        }
+
+        .bottom-nav {
+            display: none;
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: #111;
+            border-top: 1px solid var(--border);
+            padding: 0.75rem;
+            justify-content: space-around;
+            z-index: 100;
+        }
+
+        /* Components */
+        .card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            padding: 0.75rem 1.25rem;
+            border-radius: var(--radius);
+            font-weight: 600;
+            cursor: pointer;
+            transition: var(--transition);
+            border: none;
+            font-size: 0.9rem;
+        }
+
+        .btn-primary { background: var(--accent); color: white; }
+        .btn-primary:hover { opacity: 0.9; transform: translateY(-1px); }
+        .btn-secondary { background: var(--border); color: var(--text); }
+        .btn-secondary:hover { background: #333; }
+        .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
+        .btn-outline:hover { background: var(--border); }
+
+        .badge {
+            padding: 0.25rem 0.75rem;
+            border-radius: 999px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+
+        .badge-available { background: rgba(16, 185, 129, 0.1); color: var(--available); }
+        .badge-in_use { background: rgba(245, 158, 11, 0.1); color: var(--in-use); }
+        .badge-under_repair { background: rgba(249, 115, 22, 0.1); color: var(--under-repair); }
+        .badge-decommissioned { background: rgba(239, 68, 68, 0.1); color: var(--decommissioned); }
+
+        /* Forms */
+        .input-group {
+            margin-bottom: 1rem;
+        }
+
+        label {
+            display: block;
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: var(--text-dim);
+            margin-bottom: 0.5rem;
+            text-transform: uppercase;
+        }
+
+        input, select, textarea {
+            width: 100%;
+            background: #000;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 0.75rem;
+            color: white;
+            font-size: 1rem;
+            transition: var(--transition);
+        }
+
+        input:focus, select:focus, textarea:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+
+        /* Modal */
+        .modal-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.8);
+            backdrop-filter: blur(4px);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            padding: 1rem;
+        }
+
+        .modal {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            width: 100%;
+            max-width: 500px;
+            max-height: 90vh;
+            overflow-y: auto;
+            padding: 2rem;
+            position: relative;
+        }
+
+        /* Sections */
+        .section { display: none; }
+        .section.active { display: block; }
+
+        /* Inventory */
+        .inventory-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 2rem;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .filters {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+
+        .item-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 1.5rem;
+        }
+
+        .item-card {
+            cursor: pointer;
+            transition: var(--transition);
+        }
+
+        .item-card:hover {
+            border-color: var(--accent);
+            transform: translateY(-4px);
+        }
+
+        /* Reports */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 3rem;
+        }
+
+        .stat-card {
+            text-align: center;
+            padding: 2rem;
+        }
+
+        .stat-value {
+            font-size: 2.5rem;
+            font-weight: 800;
+            margin: 0.5rem 0;
+        }
+
+        /* Scanner */
+        #scanner-container {
+            width: 100%;
+            max-width: 500px;
+            margin: 0 auto;
+            aspect-ratio: 1;
+            background: #000;
+            border-radius: var(--radius);
+            overflow: hidden;
+            position: relative;
+        }
+
+        #qr-video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        /* Banner */
+        #config-banner {
+            position: fixed;
+            inset: 0;
+            background: var(--bg);
+            z-index: 9999;
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 2rem;
+            text-align: center;
+        }
+
+        /* Toast */
+        #toast {
+            position: fixed;
+            bottom: 2rem;
+            right: 2rem;
+            padding: 1rem 2rem;
+            border-radius: var(--radius);
+            background: var(--accent);
+            color: white;
+            font-weight: 600;
+            transform: translateY(200%);
+            transition: 300ms ease;
+            z-index: 2000;
+        }
+
+        #toast.show { transform: translateY(0); }
+
+        /* Loading */
+        .spinner {
+            width: 24px;
+            height: 24px;
+            border: 3px solid rgba(255,255,255,0.1);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* Responsive */
+        @media (max-width: 1024px) {
+            .sidebar { width: 200px; }
+            .item-grid { grid-template-columns: repeat(2, 1fr); }
+            .stats-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+
+        @media (max-width: 768px) {
+            .sidebar { display: none; }
+            .bottom-nav { display: flex; }
+            .main-content { padding: 1rem; padding-bottom: 5rem; }
+            .item-grid { grid-template-columns: 1fr; }
+            .stats-grid { grid-template-columns: repeat(2, 1fr); }
+            .modal { width: 95%; padding: 1rem; }
+            .filters { grid-template-columns: 1fr; }
+            .inventory-header { flex-direction: column; align-items: stretch; }
+            .inventory-header .btn { width: 100%; }
+            .table-container { overflow-x: auto; }
+            .nav-brand-text { display: none; }
+            .card { padding: 1rem; }
+            .inventory-header h1 { font-size: 1.5rem; }
+        }
+
+        @media (max-width: 480px) {
+            .stats-grid { grid-template-columns: 1fr; }
+            .modal { padding: 0.75rem; }
+            h1 { font-size: 1.5rem; }
+            h2 { font-size: 1.25rem; }
+            .stat-value { font-size: 2rem; }
+        }
+
+        /* History Table */
+        .table-container {
+            overflow-x: auto;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: left;
+        }
+
+        th, td {
+            padding: 1rem;
+            border-bottom: 1px solid var(--border);
+        }
+
+        th {
+            background: rgba(255,255,255,0.05);
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            color: var(--text-dim);
+        }
+
+        /* QR Print */
+        @media print {
+            body * { visibility: hidden; }
+            #qr-print-area, #qr-print-area * { visibility: visible; }
+            #qr-print-area { position: absolute; left: 0; top: 0; width: 100%; text-align: center; }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="config-banner">
+        <h1 style="color: var(--accent); margin-bottom: 1rem;">Configuración Requerida</h1>
+        <p style="max-width: 600px; margin-bottom: 2rem; color: var(--text-dim);">
+            Para usar esta aplicación, debe conectarla a su proyecto de Supabase. 
+            Abra este archivo en un editor de texto y complete las variables <strong>SUPABASE_URL</strong> y <strong>SUPABASE_ANON_KEY</strong> al inicio del script.
+        </p>
+        <div style="background: #1a1a1a; padding: 1.5rem; border-radius: 12px; text-align: left; font-family: monospace; border: 1px solid var(--border);">
+            const SUPABASE_URL = 'https://frzmcorhqqptzhvbcljx.supabase.co'<br>
+            const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZyem1jb3JocXFwdHpodmJjbGp4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU2NjUxMjQsImV4cCI6MjA5MTI0MTEyNH0.5Ncp8Ofz9G5AQ-7XDTO_REUCyI0PvA-eP0fNrQ1lhzc'
+        </div>
+    </div>
+
+    <div class="app-container">
+        <!-- Desktop Sidebar -->
+        <aside class="sidebar">
+            <div class="nav-brand">
+                <div id="sidebar-logo-container" style="display: flex; align-items: center; justify-content: center; width: 48px; height: 48px; border-radius: 50%; overflow: hidden; flex-shrink: 0;">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 8V21H3V8M21 8L12 3L3 8M21 8L12 13L3 8M12 13V21"/></svg>
+                </div>
+                <span class="nav-brand-text">VaultStock</span>
+            </div>
+            <ul class="nav-links">
+                <li><a href="#" class="nav-item active" data-section="inventory"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg> Inventario</a></li>
+                <li><a href="#" class="nav-item" data-section="manual"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg> Movimientos</a></li>
+                <li><a href="#" class="nav-item" data-section="scan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2M7 12h10M12 7v10"/></svg> Escanear QR</a></li>
+                <li><a href="#" class="nav-item" data-section="history"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v4l3 3m6-3a9 9 0 1 1-18 0 9 9 0 0 1 18 0z"/></svg> Historial</a></li>
+                <li><a href="#" class="nav-item" data-section="reports"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10M12 20V4M6 20v-6"/></svg> Reportes</a></li>
+                <li><a href="#" class="nav-item" data-section="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg> Configuración</a></li>
+            </ul>
+        </aside>
+
+        <!-- Mobile Bottom Nav -->
+        <nav class="bottom-nav">
+            <a href="#" class="nav-item active" data-section="inventory"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg></a>
+            <a href="#" class="nav-item" data-section="manual"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg></a>
+            <a href="#" class="nav-item" data-section="scan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2M7 12h10M12 7v10"/></svg></a>
+            <a href="#" class="nav-item" data-section="history"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v4l3 3m6-3a9 9 0 1 1-18 0 9 9 0 0 1 18 0z"/></svg></a>
+            <a href="#" class="nav-item" data-section="reports"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10M12 20V4M6 20v-6"/></svg></a>
+            <a href="#" class="nav-item" data-section="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></a>
+        </nav>
+
+        <main class="main-content">
+            <!-- Inventory Section -->
+            <section id="inventory" class="section active">
+                <div class="inventory-header">
+                    <h1>Inventario</h1>
+                    <button class="btn btn-primary" onclick="openModal('add-item-modal')">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+                        Agregar equipo
+                    </button>
+                </div>
+
+                <div class="filters">
+                    <div class="input-group">
+                        <label>Buscar</label>
+                        <input type="text" id="search-input" placeholder="Nombre o código...">
+                    </div>
+                    <div class="input-group">
+                        <label>Categoría</label>
+                        <select id="category-filter">
+                            <option value="all">Todas las categorías</option>
+                        </select>
+                    </div>
+                    <div class="input-group">
+                        <label>Estado</label>
+                        <select id="status-filter">
+                            <option value="all">Todos los estados</option>
+                            <option value="available">Disponible</option>
+                            <option value="in_use">En uso</option>
+                            <option value="under_repair">En reparación</option>
+                            <option value="decommissioned">Dado de baja</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div id="item-list" class="item-grid">
+                    <!-- Items injected here -->
+                </div>
+            </section>
+
+            <!-- Detail Section -->
+            <section id="detail" class="section">
+                <button class="btn btn-secondary" onclick="showSection('inventory')" style="margin-bottom: 2rem;">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+                    Volver
+                </button>
+                <div id="item-detail-content">
+                    <!-- Detail injected here -->
+                </div>
+            </section>
+
+            <!-- Manual Movement Section -->
+            <section id="manual" class="section">
+                <h1>Movimiento Manual</h1>
+                <div class="card" style="max-width: 600px; margin: 2rem auto;">
+                    <form id="manual-movement-form">
+                        <div class="input-group">
+                            <label>Equipo</label>
+                            <select id="manual-item-select" required>
+                                <option value="">Seleccionar un equipo...</option>
+                            </select>
+                        </div>
+                        <div class="input-group">
+                            <label>Tipo de movimiento</label>
+                            <select id="manual-type-select" required>
+                                <option value="salida">Salida</option>
+                                <option value="entrada">Entrada</option>
+                            </select>
+                        </div>
+                        <div class="input-group">
+                            <label>Cantidad</label>
+                            <input type="number" id="manual-quantity" min="1" required>
+                        </div>
+                        <div class="input-group">
+                            <label>Empleado</label>
+                            <select id="manual-employee-select" required>
+                                <option value="">Seleccionar un empleado...</option>
+                            </select>
+                        </div>
+                        <div class="input-group">
+                            <label>Notas</label>
+                            <textarea id="manual-notes" rows="3" placeholder="Notas opcionales..."></textarea>
+                        </div>
+                        <button type="submit" class="btn btn-primary" style="width: 100%;">Registrar movimiento</button>
+                    </form>
+                </div>
+            </section>
+
+            <!-- Scan Section -->
+            <section id="scan" class="section">
+                <h1>Escanear código QR</h1>
+                <div style="text-align: center; margin-top: 3rem;">
+                    <div id="scanner-container">
+                        <video id="qr-video" playsinline></video>
+                        <canvas id="qr-canvas" style="display: none;"></canvas>
+                    </div>
+                    <p id="scan-status" style="margin-top: 1.5rem; color: var(--text-dim);">Posicione el código QR dentro del marco</p>
+                    <button id="start-scan-btn" class="btn btn-primary" style="margin-top: 2rem;">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                        Iniciar cámara
+                    </button>
+                </div>
+            </section>
+
+            <!-- History Section -->
+            <section id="history" class="section">
+                <div class="inventory-header">
+                    <h1>Historial de movimientos</h1>
+                    <button class="btn btn-secondary" onclick="exportHistoryToCSV()">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+                        Exportar CSV
+                    </button>
+                </div>
+
+                <div class="filters">
+                    <div class="input-group">
+                        <label>Empleado</label>
+                        <select id="history-employee-filter">
+                            <option value="all">Todos los empleados</option>
+                        </select>
+                    </div>
+                    <div class="input-group">
+                        <label>Tipo</label>
+                        <select id="history-type-filter">
+                            <option value="all">Todos los tipos</option>
+                            <option value="checkout">Salida</option>
+                            <option value="checkin">Entrada</option>
+                        </select>
+                    </div>
+                    <div class="input-group">
+                        <label>Rango de fechas</label>
+                        <div style="display: flex; gap: 0.5rem;">
+                            <input type="date" id="history-date-from">
+                            <input type="date" id="history-date-to">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="table-container">
+                    <table id="history-table">
+                        <thead>
+                            <tr>
+                                <th>Equipo</th>
+                                <th>Tipo</th>
+                                <th>Cantidad</th>
+                                <th>Empleado</th>
+                                <th>Fecha y hora</th>
+                                <th>Notas</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <!-- History injected here -->
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- Reports Section -->
+            <section id="reports" class="section">
+                <h1>Reportes</h1>
+                
+                <div class="stats-grid">
+                    <div class="card stat-card">
+                        <label>Total equipos</label>
+                        <div class="stat-value" id="stat-total">0</div>
+                    </div>
+                </div>
+
+                <h2>Equipos asignados</h2>
+                <div class="table-container" style="margin-top: 1.5rem;">
+                    <table id="assignments-table">
+                        <thead>
+                            <tr>
+                                <th>Empleado</th>
+                                <th>Equipos en posesión</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <!-- Assignments injected here -->
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- Settings Section -->
+            <section id="settings" class="section">
+                <h1>Configuración</h1>
+
+                <!-- Personalización -->
+                <div class="card">
+                    <h2 style="margin-bottom: 1rem;">Personalización</h2>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem;">
+                        <div class="input-group">
+                            <label>Nombre de la Aplicación</label>
+                            <input type="text" id="app-name-input" placeholder="Ej: VaultStock">
+                        </div>
+                        <div class="input-group">
+                            <label>Logo de la Aplicación</label>
+                            <div style="display: flex; align-items: center; gap: 1rem;">
+                                <button class="btn btn-outline" onclick="document.getElementById('logo-upload').click()">
+                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+                                    Subir Logo
+                                </button>
+                                <input type="file" id="logo-upload" style="display: none;" accept="image/*">
+                                <button class="btn btn-outline" style="color: var(--decommissioned); border-color: rgba(239, 68, 68, 0.2);" onclick="resetLogo()">Restablecer</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Company Settings -->
+                <div class="card">
+                    <h2 style="margin-bottom: 1rem;">Ajustes de la Empresa</h2>
+                    <div class="input-group">
+                        <label>Nombre de la Empresa / Bóveda</label>
+                        <input type="text" id="company-name-input" placeholder="Ej: Mi Bóveda Técnica">
+                    </div>
+                </div>
+
+                <!-- Employee Management -->
+                <div class="card">
+                    <h2 style="margin-bottom: 1rem;">Gestión de Empleados</h2>
+                    <form id="add-employee-form" style="display: flex; gap: 1rem; margin-bottom: 1.5rem;">
+                        <input type="text" id="new-employee-name" placeholder="Nombre del nuevo empleado" required>
+                        <button type="submit" class="btn btn-primary">Agregar</button>
+                    </form>
+                    <div class="table-container">
+                        <table id="employee-list-settings">
+                            <thead>
+                                <tr>
+                                    <th>Nombre</th>
+                                    <th style="text-align: right;">Acciones</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Category Management -->
+                <div class="card">
+                    <h2 style="margin-bottom: 1rem;">Gestión de Categorías</h2>
+                    <form id="add-category-form" style="display: flex; gap: 1rem; margin-bottom: 1.5rem;">
+                        <input type="text" id="new-category-name-settings" placeholder="Nombre de la nueva categoría" required>
+                        <button type="submit" class="btn btn-primary">Agregar</button>
+                    </form>
+                    <div class="table-container">
+                        <table id="category-list-settings">
+                            <thead>
+                                <tr>
+                                    <th>Nombre</th>
+                                    <th style="text-align: right;">Acciones</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Price Formulas -->
+                <div class="card">
+                    <h2 style="margin-bottom: 1rem;">Fórmulas de Precio</h2>
+                    <form id="add-formula-form" style="display: flex; flex-direction: column; gap: 1rem; margin-bottom: 1.5rem;">
+                        <input type="text" id="new-formula-name" placeholder="Nombre de la fórmula" required>
+                        <select id="new-formula-currency">
+                            <option value="ARS">ARS</option>
+                            <option value="USD">USD</option>
+                        </select>
+                        <div id="multipliers-container">
+                            <label>Multiplicadores</label>
+                            <!-- Dynamic multipliers will be added here -->
+                        </div>
+                        <button type="button" class="btn btn-secondary" onclick="addMultiplierField()">Agregar Multiplicador</button>
+                        <button type="submit" class="btn btn-primary">Guardar Fórmula</button>
+                    </form>
+                    <div id="formula-list"></div>
+                </div>
+
+                <!-- Dollar Rate -->
+                <div class="card">
+                    <h2 style="margin-bottom: 1rem;">Cotización del Dólar</h2>
+                    <div class="input-group">
+                        <label>Tipo de cambio (1 USD = ? ARS)</label>
+                        <input type="number" id="dollar-rate-input" step="0.01" min="0" placeholder="Ej: 800.00">
+                    </div>
+                </div>
+
+                <!-- Status Reference (REMOVED) -->
+
+                <!-- Danger Zone -->
+                <div class="card" style="border-color: var(--decommissioned);">
+                    <h2 style="color: var(--decommissioned); margin-bottom: 1rem;">Zona de Peligro</h2>
+                    <div style="display: flex; gap: 1rem; margin-top: 1.5rem; flex-wrap: wrap;">
+                        <button class="btn btn-outline" onclick="exportInventoryToCSV()" style="flex: 1; min-width: 200px;">Exportar Inventario (CSV)</button>
+                        <button class="btn btn-outline" onclick="exportHistoryToCSV()" style="flex: 1; min-width: 200px;">Exportar Historial (CSV)</button>
+                        <button class="btn btn-outline" onclick="handleClearAllData()" style="flex: 1; min-width: 200px; color: var(--decommissioned); border-color: var(--decommissioned);">Borrar Todos los Datos</button>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Modals -->
+    <div id="confirm-delete-modal" class="modal-overlay">
+        <div class="modal">
+            <h2>Confirmar eliminación</h2>
+            <p id="confirm-delete-message" style="margin: 1.5rem 0; color: var(--text-dim);"></p>
+            <div style="display: flex; gap: 1rem; margin-top: 2rem;">
+                <button type="button" class="btn btn-secondary" id="confirm-delete-cancel" style="flex: 1;">Cancelar</button>
+                <button type="button" class="btn btn-primary" id="confirm-delete-confirm" style="flex: 1; background-color: var(--decommissioned); border-color: var(--decommissioned);">Eliminar</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="add-item-modal" class="modal-overlay" onclick="closeModalOnOverlay(event)">
+        <div class="modal">
+            <h2>Agregar nuevo equipo</h2>
+            <form id="add-item-form" style="margin-top: 1.5rem;">
+                <div class="input-group">
+                    <label>Nombre</label>
+                    <input type="text" id="new-item-name" required>
+                </div>
+                <div class="input-group">
+                    <label>Código único</label>
+                    <input type="text" id="new-item-code" required>
+                </div>
+                <div class="input-group">
+                    <label>Categoría</label>
+                    <select id="new-item-category" required onchange="generateItemCode('new')"></select>
+                </div>
+                <div class="input-group">
+                    <label>Cantidad Inicial</label>
+                    <input type="number" id="new-item-quantity" value="0" min="0" required>
+                </div>
+                <div class="input-group">
+                    <label>Moneda</label>
+                    <select id="new-item-currency" onchange="updatePriceFields('new')">
+                        <option value="ARS">ARS</option>
+                        <option value="USD">USD</option>
+                    </select>
+                </div>
+                <div class="input-group">
+                    <label>Fórmula</label>
+                    <select id="new-item-formula" onchange="calculateSalePrice('new')">
+                        <option value="">Seleccionar fórmula</option>
+                    </select>
+                </div>
+                <div class="input-group">
+                    <label id="new-item-buy-price-label">Precio de compra (ARS)</label>
+                    <input type="number" id="new-item-buy-price" value="0" step="0.01" min="0" required oninput="calculateSalePrice('new')">
+                </div>
+                <div class="input-group">
+                    <label>Precio de Venta</label>
+                    <input type="number" id="new-item-sale-price" step="0.01" min="0">
+                </div>
+                <div style="display: flex; gap: 1rem; margin-top: 2rem;">
+                    <button type="button" class="btn btn-secondary" onclick="closeModal('add-item-modal')" style="flex: 1;">Cancelar</button>
+                    <button type="submit" class="btn btn-primary" style="flex: 1;">Guardar</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div id="salida-modal" class="modal-overlay" onclick="closeModalOnOverlay(event)">
+        <div class="modal">
+            <h2>Registrar Salida</h2>
+            <p id="salida-item-name" style="color: var(--accent); margin-top: 0.5rem; font-weight: 600;"></p>
+            <form id="salida-form" style="margin-top: 1.5rem;">
+                <input type="hidden" id="salida-item-id">
+                <div class="input-group">
+                    <label>Cantidad</label>
+                    <input type="number" id="salida-quantity" min="1" required>
+                </div>
+                <div class="input-group">
+                    <label>Empleado</label>
+                    <select id="salida-employee-select" required></select>
+                </div>
+                <div class="input-group">
+                    <label>Notas</label>
+                    <textarea id="salida-notes" rows="3" placeholder="Notas opcionales..."></textarea>
+                </div>
+                <div style="display: flex; gap: 1rem; margin-top: 2rem;">
+                    <button type="button" class="btn btn-secondary" onclick="closeModal('salida-modal')" style="flex: 1;">Cancelar</button>
+                    <button type="submit" class="btn btn-primary" style="flex: 1;">Confirmar salida</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div id="entrada-modal" class="modal-overlay" onclick="closeModalOnOverlay(event)">
+        <div class="modal">
+            <h2>Registrar Entrada</h2>
+            <p id="entrada-item-name" style="color: var(--accent); margin-top: 0.5rem; font-weight: 600;"></p>
+            <form id="entrada-form" style="margin-top: 1.5rem;">
+                <input type="hidden" id="entrada-item-id">
+                <div class="input-group">
+                    <label>Cantidad</label>
+                    <input type="number" id="entrada-quantity" min="1" required>
+                </div>
+                <div class="input-group">
+                    <label>Notas</label>
+                    <textarea id="entrada-notes" rows="3" placeholder="Notas opcionales..."></textarea>
+                </div>
+                <div style="display: flex; gap: 1rem; margin-top: 2rem;">
+                    <button type="button" class="btn btn-secondary" onclick="closeModal('entrada-modal')" style="flex: 1;">Cancelar</button>
+                    <button type="submit" class="btn btn-primary" style="flex: 1;">Confirmar entrada</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div id="qr-movement-modal" class="modal-overlay" onclick="closeModalOnOverlay(event)">
+        <div class="modal" style="max-width: 600px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+                <h2 style="margin: 0;">Equipo Reconocido</h2>
+                <button class="btn btn-secondary" onclick="closeModal('qr-movement-modal')" style="padding: 0.2rem 0.6rem; min-height: auto;">✕</button>
+            </div>
+            
+            <div id="qr-modal-content">
+                <!-- Content will be injected here -->
+            </div>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 2rem;">
+                <button class="btn btn-primary" id="qr-btn-salida">Registrar Salida</button>
+                <button class="btn btn-primary" id="qr-btn-entrada" style="background-color: var(--available);">Registrar Entrada</button>
+                <button class="btn btn-outline" id="qr-btn-print" style="grid-column: span 2; display: flex; align-items: center; justify-content: center; gap: 0.5rem;">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 14h12v8H6z"/></svg>
+                    Imprimir Código QR
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div id="edit-item-modal" class="modal-overlay" onclick="closeModalOnOverlay(event)">
+        <div class="modal">
+            <h2>Editar equipo</h2>
+            <form id="edit-item-form" style="margin-top: 1.5rem;">
+                <input type="hidden" id="edit-item-id">
+                <div class="input-group">
+                    <label>Nombre</label>
+                    <input type="text" id="edit-item-name" required>
+                </div>
+                <div class="input-group">
+                    <label>Código único</label>
+                    <input type="text" id="edit-item-code" required>
+                </div>
+                <div class="input-group">
+                    <label>Categoría</label>
+                    <select id="edit-item-category" required onchange="generateItemCode('edit')"></select>
+                </div>
+                <div class="input-group">
+                    <label>Descripción</label>
+                    <textarea id="edit-item-desc" rows="3"></textarea>
+                </div>
+                <div class="input-group">
+                    <label>Cantidad</label>
+                    <input type="number" id="edit-item-quantity" min="0" required>
+                </div>
+                <div class="input-group">
+                    <label>Moneda</label>
+                    <select id="edit-item-currency" onchange="updatePriceFields('edit')">
+                        <option value="ARS">ARS</option>
+                        <option value="USD">USD</option>
+                    </select>
+                </div>
+                <div class="input-group">
+                    <label>Fórmula</label>
+                    <select id="edit-item-formula" onchange="calculateSalePrice('edit')">
+                        <option value="">Seleccionar fórmula</option>
+                    </select>
+                </div>
+                <div class="input-group">
+                    <label id="edit-item-buy-price-label">Precio de compra (ARS)</label>
+                    <input type="number" id="edit-item-buy-price" step="0.01" min="0" required oninput="calculateSalePrice('edit')">
+                </div>
+                <div class="input-group">
+                    <label>Precio de Venta</label>
+                    <input type="number" id="edit-item-sale-price" step="0.01" min="0">
+                </div>
+                <div style="display: flex; gap: 1rem; margin-top: 2rem;">
+                    <button type="button" class="btn btn-secondary" onclick="closeModal('edit-item-modal')" style="flex: 1;">Cancelar</button>
+                    <button type="submit" class="btn btn-primary" style="flex: 1;">Guardar cambios</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    <div id="qr-print-area" style="display: none;"></div>
+
+    <div id="toast">Mensaje aquí</div>
+
+    <script>
+        // --- ERROR HANDLING ---
+        window.onerror = function(msg, url, lineNo, columnNo, error) {
+            console.error('Global Error:', msg, 'at', url, 'line:', lineNo);
+            // Don't show toast for generic script errors which are often benign or CORS related
+            if (msg !== "Script error.") {
+                showToast("Error del sistema: " + msg);
+            }
+            return false;
+        };
+
+        // --- CONFIGURATION ---
+        const SUPABASE_URL = 'https://frzmcorhqqptzhvbcljx.supabase.co'
+        const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZyem1jb3JocXFwdHpodmJjbGp4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU2NjUxMjQsImV4cCI6MjA5MTI0MTEyNH0.5Ncp8Ofz9G5AQ-7XDTO_REUCyI0PvA-eP0fNrQ1lhzc'
+
+        // --- INITIALIZATION ---
+        let db = null;
+
+        if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+            const banner = document.getElementById('config-banner');
+            if (banner) banner.style.display = 'flex';
+        } else {
+            try {
+                db = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+            } catch (e) {
+                console.error("Failed to initialize Supabase:", e);
+                const banner = document.getElementById('config-banner');
+                if (banner) banner.style.display = 'flex';
+            }
+        }
+
+        // State
+        let items = [];
+        let employees = [];
+        let categories = [];
+        let movements = [];
+        let currentItem = null;
+        let isScanning = false;
+        let videoStream = null;
+
+        const statusMap = {
+            'available': 'Disponible',
+            'in_use': 'En uso',
+            'under_repair': 'En reparación',
+            'decommissioned': 'Dado de baja'
+        };
+
+        // --- CORE FUNCTIONS ---
+
+        async function init() {
+            if (!db) return;
+            
+            // Load app personalization
+            const savedAppName = localStorage.getItem('vault_app_name') || localStorage.getItem('vault_company_name');
+            if (savedAppName) {
+                const appNameInput = document.getElementById('app-name-input');
+                if (appNameInput) appNameInput.value = savedAppName;
+                
+                const companyNameInput = document.getElementById('company-name-input');
+                if (companyNameInput) companyNameInput.value = savedAppName;
+                
+                updateCompanyNameUI(savedAppName);
+            }
+
+            const savedLogo = localStorage.getItem('vault_app_logo');
+            if (savedLogo) {
+                updateLogoUI(savedLogo);
+            }
+
+            try {
+                await Promise.all([
+                    fetchEmployees(),
+                    fetchCategories(),
+                    fetchItems(),
+                    fetchMovements(),
+                    fetchFormulas()
+                ]);
+                
+                renderInventory();
+                renderReports();
+                renderFormulas();
+                populateSelects();
+                setupRealtime();
+            } catch (err) {
+                showError("Error de inicialización: " + err.message);
+            }
+        }
+
+        function updateCompanyNameUI(name) {
+            const finalName = name || 'VaultStock';
+            document.querySelectorAll('.nav-brand-text').forEach(el => el.innerText = finalName);
+            document.title = finalName + ' - Gestión de Equipos';
+        }
+
+        function updateLogoUI(base64) {
+            const container = document.getElementById('sidebar-logo-container');
+            if (container) {
+                if (base64) {
+                    container.innerHTML = `<img src="${base64}" style="width: 100%; height: 100%; object-fit: cover; border-radius: 50%;">`;
+                } else {
+                    container.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 8V21H3V8M21 8L12 3L3 8M21 8L12 13L3 8M12 13V21"/></svg>`;
+                }
+            }
+        }
+
+        function resetLogo() {
+            localStorage.removeItem('vault_app_logo');
+            updateLogoUI(null);
+            showToast("Logo restablecido");
+        }
+
+        async function fetchFormulas() {
+            if (!db) return;
+            const { data, error } = await db.from('price_formulas').select('*').order('name');
+            if (error) return showError(error.message);
+            formulas = data || [];
+        }
+
+        async function fetchEmployees() {
+            if (!db) return;
+            const { data, error } = await db.from('employees').select('*').order('name');
+            if (error) return showError(error.message);
+            employees = data || [];
+        }
+
+        async function fetchCategories() {
+            if (!db) return;
+            const { data, error } = await db.from('categories').select('*').order('name');
+            if (error) return showError(error.message);
+            categories = data || [];
+        }
+
+        async function fetchItems() {
+            if (!db) return;
+            const { data, error } = await db.from('items').select('*, categories(*)').order('name');
+            if (error) return showError(error.message);
+            items = data || [];
+        }
+
+        async function fetchMovements() {
+            if (!db) return;
+            const { data, error } = await db.from('movements').select('*, items(name), employees(name)').order('timestamp', { ascending: false });
+            if (error) return showError(error.message);
+            movements = data || [];
+        }
+
+        function setupRealtime() {
+            if (!db) return;
+            db.channel('public:items')
+                .on('postgres_changes', { event: '*', schema: 'public', table: 'items' }, () => {
+                    fetchItems().then(() => {
+                        renderInventory();
+                        renderReports();
+                        if (document.getElementById('settings').classList.contains('active')) renderSettings();
+                        if (currentItem) {
+                            const updated = items.find(i => i.id === currentItem.id);
+                            if (updated) renderDetail(updated);
+                        }
+                    });
+                })
+                .subscribe();
+
+            db.channel('public:employees')
+                .on('postgres_changes', { event: '*', schema: 'public', table: 'employees' }, () => {
+                    fetchEmployees().then(() => {
+                        populateSelects();
+                        if (document.getElementById('settings').classList.contains('active')) renderSettings();
+                    });
+                })
+                .subscribe();
+
+            db.channel('public:categories')
+                .on('postgres_changes', { event: '*', schema: 'public', table: 'categories' }, () => {
+                    fetchCategories().then(() => {
+                        populateSelects();
+                        if (document.getElementById('settings').classList.contains('active')) renderSettings();
+                    });
+                })
+                .subscribe();
+
+            db.channel('public:movements')
+                .on('postgres_changes', { event: '*', schema: 'public', table: 'movements' }, () => {
+                    fetchMovements().then(() => {
+                        renderHistory();
+                        renderReports();
+                    });
+                })
+                .subscribe();
+        }
+
+        // --- UI RENDERING ---
+
+        function renderSettings() {
+            // Render Employees
+            const empBody = document.querySelector('#employee-list-settings tbody');
+            empBody.innerHTML = employees.map(emp => `
+                <tr>
+                    <td>${emp.name}</td>
+                    <td style="text-align: right;">
+                        <button class="btn btn-outline" style="padding: 0.4rem; color: var(--decommissioned); border-color: rgba(239, 68, 68, 0.2);" onclick="handleDeleteEmployee('${emp.id}')">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6"/></svg>
+                        </button>
+                    </td>
+                </tr>
+            `).join('');
+
+            // Render Categories
+            const catBody = document.querySelector('#category-list-settings tbody');
+            catBody.innerHTML = categories.map(cat => `
+                <tr>
+                    <td>${cat.name}</td>
+                    <td style="text-align: right;">
+                        <button class="btn btn-outline" style="padding: 0.4rem; color: var(--decommissioned); border-color: rgba(239, 68, 68, 0.2);" onclick="handleDeleteCategory('${cat.id}')">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6"/></svg>
+                        </button>
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        function renderInventory() {
+            const list = document.getElementById('item-list');
+            const search = document.getElementById('search-input').value.toLowerCase();
+            const catFilter = document.getElementById('category-filter').value;
+            const statFilter = document.getElementById('status-filter').value;
+
+            const filtered = items.filter(item => {
+                const matchesSearch = item.name.toLowerCase().includes(search) || item.code.toLowerCase().includes(search);
+                const matchesCat = catFilter === 'all' || item.category_id === catFilter;
+                const matchesStat = statFilter === 'all' || item.status === statFilter;
+                return matchesSearch && matchesCat && matchesStat;
+            });
+
+            list.innerHTML = filtered.map(item => `
+                <div class="card item-card" onclick="showItemDetail('${item.id}')">
+                    <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1rem;">
+                        <code style="font-size: 0.75rem; color: var(--text-dim);">${item.code}</code>
+                    </div>
+                    <h3 style="margin-bottom: 0.25rem;">${item.name}</h3>
+                    <p style="font-size: 0.85rem; color: var(--text-dim); margin-bottom: 1rem;">${item.categories?.name || 'Sin categoría'}</p>
+                    
+                    <div style="margin-bottom: 1rem;">
+                        <div style="font-size: 2rem; font-weight: 700; color: ${item.quantity === 0 ? 'var(--decommissioned)' : 'var(--text)'};">
+                            ${item.quantity}
+                        </div>
+                        <div style="font-size: 0.85rem; color: var(--text-dim); margin-bottom: 0.5rem;">En stock</div>
+                        <div style="font-size: 0.85rem; color: var(--text-dim);">
+                            Compra: $${item.buy_price || 0} ${item.currency || 'ARS'} | Venta: $${item.sale_price || 'N/A'} ${item.currency || 'ARS'}
+                        </div>
+                    </div>
+
+                    <div style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.8rem; color: var(--text-dim); border-top: 1px solid var(--border); padding-top: 1rem;">
+                        <button class="btn btn-outline" style="padding: 0.2rem; color: var(--accent); border-color: rgba(59, 130, 246, 0.2);" onclick="event.stopPropagation(); openEditModal('${item.id}')">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                        </button>
+                        <button class="btn btn-outline" style="padding: 0.2rem; margin-left: auto; color: var(--decommissioned); border-color: rgba(239, 68, 68, 0.2);" onclick="event.stopPropagation(); deleteItem('${item.id}')">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6"/></svg>
+                        </button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function renderDetail(item) {
+            currentItem = item;
+            const content = document.getElementById('item-detail-content');
+            
+            content.innerHTML = `
+                <div class="card" style="display: grid; grid-template-columns: 1fr 200px; gap: 2rem;">
+                    <div>
+                        <div style="margin-bottom: 1.5rem;">
+                            <h1 style="font-size: 2.5rem; margin-top: 0.5rem;">${item.name}</h1>
+                            <code style="font-size: 1.2rem; color: var(--accent);">${item.code}</code>
+                        </div>
+                        
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; margin-bottom: 2rem;">
+                            <div>
+                                <label>Categoría</label>
+                                <p>${item.categories?.name || 'N/D'}</p>
+                            </div>
+                            <div>
+                                <label>Stock Actual</label>
+                                <p>${item.quantity}</p>
+                            </div>
+                        </div>
+
+                        <div style="margin-bottom: 2rem;">
+                            <label>Descripción</label>
+                            <p style="color: var(--text-dim);">${item.description || 'Sin descripción.'}</p>
+                        </div>
+
+                        <div style="display: flex; gap: 1rem;">
+                            <button class="btn btn-primary" onclick="openSalidaModal('${item.id}', '${item.name}')">Salida</button>
+                            <button class="btn btn-primary" onclick="openEntradaModal('${item.id}', '${item.name}')">Entrada</button>
+                            <button class="btn btn-outline" onclick="printQR()">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 14h12v8H6z"/></svg>
+                                Imprimir QR
+                            </button>
+                            <button class="btn btn-outline" style="color: var(--decommissioned); border-color: rgba(239, 68, 68, 0.2);" onclick="deleteItem('${item.id}')">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6"/></svg>
+                                Eliminar
+                            </button>
+                        </div>
+                    </div>
+                    <div style="text-align: center;">
+                        <div id="detail-qr" style="background: white; padding: 1rem; border-radius: 12px; display: inline-block;"></div>
+                        <p style="margin-top: 1rem; font-size: 0.8rem; color: var(--text-dim);">Código QR del equipo</p>
+                    </div>
+                </div>
+            `;
+
+            new QRCode(document.getElementById("detail-qr"), {
+                text: item.code,
+                width: 160,
+                height: 160,
+                colorDark : "#000000",
+                colorLight : "#ffffff",
+                correctLevel : QRCode.CorrectLevel.H
+            });
+        }
+
+        function renderHistory() {
+            const tbody = document.querySelector('#history-table tbody');
+            const empFilter = document.getElementById('history-employee-filter').value;
+            const typeFilter = document.getElementById('history-type-filter').value;
+            const dateFrom = document.getElementById('history-date-from').value;
+            const dateTo = document.getElementById('history-date-to').value;
+
+            const filtered = movements.filter(mov => {
+                const matchesEmp = empFilter === 'all' || mov.employee_id === empFilter;
+                const matchesType = typeFilter === 'all' || mov.type === typeFilter;
+                const date = mov.timestamp.split('T')[0];
+                const matchesFrom = !dateFrom || date >= dateFrom;
+                const matchesTo = !dateTo || date <= dateTo;
+                return matchesEmp && matchesType && matchesFrom && matchesTo;
+            });
+
+            tbody.innerHTML = filtered.map(mov => `
+                <tr>
+                    <td>
+                        <div style="font-weight: 600;">${mov.items?.name}</div>
+                    </td>
+                    <td>
+                        <div style="display: flex; align-items: center; gap: 0.5rem; color: ${mov.type === 'salida' ? 'var(--decommissioned)' : 'var(--available)'}">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                                ${mov.type === 'salida' ? '<path d="M10 17l5-5-5-5M13.8 12H3m9 10a10 10 0 1 0 0-20"/>' : '<path d="M14 7l-5 5 5 5M10.2 12H21m-9 10a10 10 0 1 1 0-20"/>'}
+                            </svg>
+                            ${mov.type === 'salida' ? 'Salida' : 'Entrada'}
+                        </div>
+                    </td>
+                    <td>${mov.quantity}</td>
+                    <td>${mov.employees?.name || 'Sistema'}</td>
+                    <td>
+                        <div style="font-size: 0.85rem;">${new Date(mov.timestamp).toLocaleDateString()}</div>
+                        <div style="font-size: 0.75rem; color: var(--text-dim);">${new Date(mov.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</div>
+                    </td>
+                    <td style="font-size: 0.85rem; color: var(--text-dim); max-width: 200px;">${mov.notes || '-'}</td>
+                </tr>
+            `).join('');
+        }
+
+        function renderReports() {
+            const stats = {
+                total: items.reduce((sum, i) => sum + i.quantity, 0),
+                itemsCount: items.length
+            };
+
+            document.getElementById('stat-total').innerText = stats.total;
+            
+            const tbody = document.querySelector('#assignments-table tbody');
+            tbody.innerHTML = '<tr><td colspan="2" style="text-align: center; color: var(--text-dim);">No hay asignaciones en este sistema.</td></tr>';
+        }
+
+        function populateSelects() {
+            const catFilter = document.getElementById('category-filter');
+            const newItemCat = document.getElementById('new-item-category');
+            const histEmpFilter = document.getElementById('history-employee-filter');
+            const manualItem = document.getElementById('manual-item-select');
+            const manualEmp = document.getElementById('manual-employee-select');
+            const checkoutEmp = document.getElementById('salida-employee-select');
+            const editItemCat = document.getElementById('edit-item-category');
+
+            const catOptions = categories.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+            const empOptions = employees.map(e => `<option value="${e.id}">${e.name}</option>`).join('');
+            const itemOptions = items.map(i => `<option value="${i.id}">${i.name} (${i.code})</option>`).join('');
+
+            if (catFilter) catFilter.innerHTML = '<option value="all">Todas las categorías</option>' + catOptions;
+            if (newItemCat) newItemCat.innerHTML = '<option value="">Seleccionar categoría</option>' + catOptions;
+            if (editItemCat) editItemCat.innerHTML = '<option value="">Seleccionar categoría</option>' + catOptions;
+            if (histEmpFilter) histEmpFilter.innerHTML = '<option value="all">Todos los empleados</option>' + empOptions;
+            if (manualItem) manualItem.innerHTML = '<option value="">Seleccionar un equipo...</option>' + itemOptions;
+            if (manualEmp) manualEmp.innerHTML = '<option value="">Seleccionar un empleado...</option>' + empOptions;
+            if (checkoutEmp) checkoutEmp.innerHTML = '<option value="">Seleccionar un empleado...</option>' + empOptions;
+            
+            updatePriceFields('new');
+        }
+
+        // --- ACTIONS ---
+
+        async function handleEntrada(itemId, quantity, empId = null, notes = 'Entrada manual') {
+            const item = items.find(i => i.id === itemId);
+            if (!item) return;
+
+            const { error } = await db.from('items').update({ quantity: item.quantity + quantity }).eq('id', itemId);
+            if (error) return showError(error.message);
+
+            await db.from('movements').insert({
+                item_id: itemId,
+                type: 'entrada',
+                quantity: quantity,
+                employee_id: empId,
+                notes: notes
+            });
+
+            showToast('Entrada registrada con éxito');
+        }
+
+        async function handleSalida(itemId, quantity, empId, notes) {
+            const item = items.find(i => i.id === itemId);
+            if (!item) return;
+            if (item.quantity < quantity) return showError("Stock insuficiente");
+
+            const { error } = await db.from('items').update({ quantity: item.quantity - quantity }).eq('id', itemId);
+            if (error) return showError(error.message);
+
+            await db.from('movements').insert({
+                item_id: itemId,
+                type: 'salida',
+                quantity: quantity,
+                employee_id: empId,
+                notes: notes
+            });
+
+            showToast('Salida registrada con éxito');
+        }
+
+        async function handleAddItem(e) {
+            e.preventDefault();
+            const name = document.getElementById('new-item-name').value;
+            const code = document.getElementById('new-item-code').value;
+            const catId = document.getElementById('new-item-category').value;
+            const quantity = parseInt(document.getElementById('new-item-quantity').value);
+            const currency = document.getElementById('new-item-currency').value;
+            const formulaId = document.getElementById('new-item-formula').value || null;
+            const buyPrice = parseFloat(document.getElementById('new-item-buy-price').value) || 0;
+            const salePrice = parseFloat(document.getElementById('new-item-sale-price').value) || null;
+
+            const { error } = await db.from('items').insert({
+                name, code, category_id: catId, quantity: quantity, buy_price: buyPrice, sale_price: salePrice,
+                currency: currency, formula_id: formulaId
+            });
+
+            if (error) return showError(error.message);
+
+            closeModal('add-item-modal');
+            e.target.reset();
+            showToast('Nuevo equipo agregado al inventario');
+            await fetchItems();
+            renderInventory();
+            populateSelects();
+        }
+
+        async function handleManualMovement(e) {
+            e.preventDefault();
+            const itemId = document.getElementById('manual-item-select').value;
+            const type = document.getElementById('manual-type-select').value;
+            const quantity = parseInt(document.getElementById('manual-quantity').value);
+            const empId = document.getElementById('manual-employee-select').value;
+            const notes = document.getElementById('manual-notes').value;
+
+            if (type === 'entrada') {
+                await handleEntrada(itemId, quantity, empId, notes);
+            } else {
+                await handleSalida(itemId, quantity, empId, notes);
+            }
+
+            e.target.reset();
+            await fetchItems();
+            await fetchMovements();
+            renderInventory();
+            renderReports();
+            renderHistory();
+        }
+
+        async function handleSalidaSubmit(e) {
+            e.preventDefault();
+            const itemId = document.getElementById('salida-item-id').value;
+            const quantity = parseInt(document.getElementById('salida-quantity').value);
+            const empId = document.getElementById('salida-employee-select').value;
+            const notes = document.getElementById('salida-notes').value;
+
+            await handleSalida(itemId, quantity, empId, notes);
+            closeModal('salida-modal');
+            e.target.reset();
+            await fetchItems();
+            await fetchMovements();
+            renderInventory();
+            renderReports();
+            renderHistory();
+        }
+
+        async function handleEntradaSubmit(e) {
+            e.preventDefault();
+            const itemId = document.getElementById('entrada-item-id').value;
+            const quantity = parseInt(document.getElementById('entrada-quantity').value);
+            const notes = document.getElementById('entrada-notes').value;
+
+            await handleEntrada(itemId, quantity, null, notes);
+            closeModal('entrada-modal');
+            e.target.reset();
+            await fetchItems();
+            await fetchMovements();
+            renderInventory();
+            renderReports();
+            renderHistory();
+        }
+
+        async function handleAddEmployee(e) {
+            e.preventDefault();
+            const name = document.getElementById('new-employee-name').value;
+            const { error } = await db.from('employees').insert({ name });
+            if (error) return showError(error.message);
+            
+            e.target.reset();
+            showToast('Empleado agregado con éxito');
+            await fetchEmployees();
+            populateSelects();
+            renderSettings();
+        }
+
+        async function handleDeleteEmployee(id) {
+            console.log('handleDeleteEmployee called with id:', id);
+            try {
+                const holdsItems = items.some(i => 
+                    i.current_holder_id && String(i.current_holder_id) === String(id)
+                );
+                if (holdsItems) {
+                    return showToast("No se puede eliminar: el empleado tiene equipos en su posesión.", true);
+                }
+                if (!(await confirmDelete("¿Está seguro de eliminar este empleado?"))) return;
+                
+                const { error } = await db.from('employees').delete().eq('id', id);
+                console.log('Supabase delete result:', { error });
+                if (error) throw error;
+                
+                employees = employees.filter(e => String(e.id) !== String(id));
+                populateSelects();
+                renderSettings();
+                showToast('Empleado eliminado correctamente');
+            } catch(e) {
+                console.error('Error in handleDeleteEmployee:', e);
+                showToast('Error al eliminar: ' + e.message, true);
+            }
+        }
+
+        async function handleAddCategory(e) {
+            e.preventDefault();
+            const name = document.getElementById('new-category-name-settings').value;
+            const { error } = await db.from('categories').insert({ name });
+            if (error) return showError(error.message);
+            
+            e.target.reset();
+            showToast('Categoría agregada con éxito');
+            await fetchCategories();
+            populateSelects();
+            renderSettings();
+        }
+
+        async function handleDeleteCategory(id) {
+            try {
+                const hasItems = items.some(i => 
+                    i.category_id && String(i.category_id) === String(id)
+                );
+                if (hasItems) {
+                    return showToast("No se puede eliminar: existen equipos asignados a esta categoría.", true);
+                }
+                if (!(await confirmDelete("¿Está seguro de eliminar esta categoría?"))) return;
+                
+                const { error } = await db.from('categories').delete().eq('id', id);
+                if (error) throw error;
+                
+                categories = categories.filter(c => String(c.id) !== String(id));
+                populateSelects();
+                renderSettings();
+                showToast('Categoría eliminada correctamente');
+            } catch(e) {
+                showToast('Error al eliminar: ' + e.message, true);
+            }
+        }
+
+        async function deleteItem(id) {
+            try {
+                const item = items.find(i => String(i.id) === String(id));
+                if (item && item.current_holder_id) {
+                    throw new Error("No se puede eliminar un equipo que está asignado a un empleado. Primero debe ser devuelto.");
+                }
+                if (!(await confirmDelete("¿Está seguro de eliminar este equipo? Esta acción no se puede deshacer."))) return;
+                
+                const { error } = await db.from('items').delete().eq('id', id);
+                if (error) throw error;
+                
+                items = items.filter(i => String(i.id) !== String(id));
+                renderInventory();
+                renderReports();
+                showToast("Equipo eliminado correctamente");
+            } catch(e) {
+                showToast('Error al eliminar: ' + e.message, true);
+            }
+        }
+
+        // --- SCANNER ---
+
+        async function startScanner() {
+            if (isScanning) return;
+            
+            try {
+                videoStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+                const video = document.getElementById('qr-video');
+                video.srcObject = videoStream;
+                video.play();
+                isScanning = true;
+                const scanBtn = document.getElementById('start-scan-btn');
+                if (scanBtn) scanBtn.style.display = 'none';
+                requestAnimationFrame(scanTick);
+            } catch (err) {
+                showError("Acceso a la cámara denegado o no disponible.");
+            }
+        }
+
+        function scanTick() {
+            if (!isScanning) return;
+
+            const video = document.getElementById('qr-video');
+            const canvas = document.getElementById('qr-canvas');
+            const ctx = canvas.getContext('2d');
+
+            if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                canvas.height = video.videoHeight;
+                canvas.width = video.videoWidth;
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                const code = jsQR(imageData.data, imageData.width, imageData.height, {
+                    inversionAttempts: "dontInvert",
+                });
+
+                if (code) {
+                    const item = items.find(i => i.code === code.data);
+                    if (item) {
+                        stopScanner();
+                        openQRMovementModal(item);
+                    } else {
+                        const statusEl = document.getElementById('scan-status');
+                        if (statusEl) {
+                            statusEl.innerText = "Código desconocido: " + code.data;
+                            statusEl.style.color = "var(--decommissioned)";
+                        }
+                    }
+                }
+            }
+            requestAnimationFrame(scanTick);
+        }
+
+        function stopScanner() {
+            isScanning = false;
+            if (videoStream) {
+                videoStream.getTracks().forEach(track => track.stop());
+            }
+            const scanBtn = document.getElementById('start-scan-btn');
+            if (scanBtn) scanBtn.style.display = 'inline-flex';
+            const statusEl = document.getElementById('scan-status');
+            if (statusEl) {
+                statusEl.innerText = "Posicione el código QR dentro del marco";
+                statusEl.style.color = "var(--text-dim)";
+            }
+        }
+
+        // --- UTILS ---
+
+        function showSection(id) {
+            document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+            document.getElementById(id).classList.add('active');
+            
+            document.querySelectorAll('.nav-item').forEach(n => {
+                if (n.dataset.section === id) n.classList.add('active');
+                else n.classList.remove('active');
+            });
+
+            if (id === 'history') renderHistory();
+            if (id === 'reports') renderReports();
+            if (id === 'settings') renderSettings();
+            if (id !== 'scan') stopScanner();
+        }
+
+        function showItemDetail(id) {
+            const item = items.find(i => i.id === id);
+            if (item) {
+                renderDetail(item);
+                showSection('detail');
+            }
+        }
+
+        async function handleClearAllData() {
+            if (!(await confirmDelete("¿Está seguro de que desea borrar TODOS los datos? Esta acción eliminará permanentemente todos los equipos, empleados, categorías, fórmulas e historial de movimientos."))) return;
+
+            try {
+                const tables = ['movements', 'price_formulas', 'items', 'employees', 'categories'];
+                for (const table of tables) {
+                    const { error } = await db.from(table).delete().neq('id', '00000000-0000-0000-0000-000000000000');
+                    if (error) throw error;
+                }
+
+                // Update local state
+                items = [];
+                employees = [];
+                categories = [];
+                movements = [];
+                // Clear formulas local array if it exists
+                if (typeof formulas !== 'undefined') formulas = [];
+
+                // Re-render
+                renderInventory();
+                renderReports();
+                renderSettings();
+                populateSelects();
+
+                showToast('Todos los datos han sido borrados correctamente.');
+            } catch (e) {
+                console.error('Error in handleClearAllData:', e);
+                showToast('Error al borrar los datos: ' + e.message, true);
+            }
+        }
+
+        function confirmDelete(message) {
+            return new Promise((resolve) => {
+                const modal = document.getElementById('confirm-delete-modal');
+                const messageEl = document.getElementById('confirm-delete-message');
+                const confirmBtn = document.getElementById('confirm-delete-confirm');
+                const cancelBtn = document.getElementById('confirm-delete-cancel');
+
+                messageEl.innerText = message;
+                if (modal) modal.style.display = 'flex';
+
+                const cleanup = () => {
+                    if (modal) modal.style.display = 'none';
+                    if (confirmBtn) confirmBtn.removeEventListener('click', onConfirm);
+                    if (cancelBtn) cancelBtn.removeEventListener('click', onCancel);
+                };
+
+                const onConfirm = () => {
+                    cleanup();
+                    resolve(true);
+                };
+
+                const onCancel = () => {
+                    cleanup();
+                    resolve(false);
+                };
+
+                if (confirmBtn) confirmBtn.addEventListener('click', onConfirm);
+                if (cancelBtn) cancelBtn.addEventListener('click', onCancel);
+            });
+        }
+
+        function openQRMovementModal(item) {
+            if (!item) return;
+            
+            currentItem = item;
+            const id = item.id;
+            const name = item.name;
+            
+            const content = document.getElementById('qr-modal-content');
+            if (content) {
+                content.innerHTML = `
+                    <div style="display: grid; grid-template-columns: 1fr 150px; gap: 1.5rem; text-align: left;">
+                        <div>
+                            <div style="margin-bottom: 1rem;">
+                                <h3 style="font-size: 1.5rem; color: var(--text); margin: 0;">${item.name}</h3>
+                                <code style="color: var(--accent); font-size: 0.9rem;">${item.code}</code>
+                            </div>
+                            
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                                <div>
+                                    <label style="font-size: 0.7rem; color: var(--text-dim); text-transform: uppercase; display: block; margin-bottom: 0.2rem;">Categoría</label>
+                                    <p style="margin: 0;">${item.categories?.name || 'N/D'}</p>
+                                </div>
+                                <div>
+                                    <label style="font-size: 0.7rem; color: var(--text-dim); text-transform: uppercase; display: block; margin-bottom: 0.2rem;">Stock Actual</label>
+                                    <p style="margin: 0; font-weight: 600; color: ${item.quantity > 0 ? 'var(--available)' : 'var(--decommissioned)'}">${item.quantity}</p>
+                                </div>
+                            </div>
+
+                            <div style="margin-bottom: 1rem;">
+                                <label style="font-size: 0.7rem; color: var(--text-dim); text-transform: uppercase; display: block; margin-bottom: 0.2rem;">Descripción</label>
+                                <p style="font-size: 0.9rem; margin: 0; color: var(--text-dim);">${item.description || 'Sin descripción.'}</p>
+                            </div>
+
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                                <div>
+                                    <label style="font-size: 0.7rem; color: var(--text-dim); text-transform: uppercase; display: block; margin-bottom: 0.2rem;">Precio Compra</label>
+                                    <p style="margin: 0;">${item.buy_price} ${item.currency}</p>
+                                </div>
+                                <div>
+                                    <label style="font-size: 0.7rem; color: var(--text-dim); text-transform: uppercase; display: block; margin-bottom: 0.2rem;">Precio Venta</label>
+                                    <p style="margin: 0;">${item.sale_price || 'N/D'} ${item.currency}</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div style="text-align: center; background: rgba(255,255,255,0.03); padding: 1rem; border-radius: 8px; display: flex; flex-direction: column; align-items: center; justify-content: center;">
+                             <div id="qr-modal-img" style="background: white; padding: 0.5rem; border-radius: 4px; display: inline-block;"></div>
+                             <p style="font-size: 0.6rem; margin-top: 0.5rem; color: var(--text-dim); text-transform: uppercase;">Código QR</p>
+                        </div>
+                    </div>
+                `;
+
+                // Generate QR in the modal
+                const qrContainer = document.getElementById('qr-modal-img');
+                if (qrContainer) {
+                    qrContainer.innerHTML = '';
+                    new QRCode(qrContainer, {
+                        text: item.code,
+                        width: 100,
+                        height: 100,
+                        colorDark: "#000000",
+                        colorLight: "#ffffff"
+                    });
+
+                    // Update detail-qr for printQR function
+                    const detailQr = document.getElementById('detail-qr');
+                    if (detailQr) {
+                        detailQr.innerHTML = qrContainer.innerHTML;
+                    }
+                }
+            }
+
+            const btnSalida = document.getElementById('qr-btn-salida');
+            if (btnSalida) {
+                btnSalida.onclick = () => {
+                    closeModal('qr-movement-modal');
+                    openSalidaModal(id, name);
+                };
+            }
+            
+            const btnEntrada = document.getElementById('qr-btn-entrada');
+            if (btnEntrada) {
+                btnEntrada.onclick = () => {
+                    closeModal('qr-movement-modal');
+                    openEntradaModal(id, name);
+                };
+            }
+
+            const btnPrint = document.getElementById('qr-btn-print');
+            if (btnPrint) {
+                btnPrint.onclick = () => {
+                    printQR();
+                };
+            }
+            
+            openModal('qr-movement-modal');
+        }
+
+        function openModal(id) {
+            const el = document.getElementById(id);
+            if (el) el.style.display = 'flex';
+        }
+
+        function closeModal(id) {
+            const el = document.getElementById(id);
+            if (el) el.style.display = 'none';
+        }
+
+        function closeModalOnOverlay(e) {
+            if (e.target.classList.contains('modal-overlay')) {
+                if (e.target) e.target.style.display = 'none';
+            }
+        }
+
+        function openSalidaModal(id, name) {
+            document.getElementById('salida-item-id').value = id;
+            document.getElementById('salida-item-name').innerText = name;
+            openModal('salida-modal');
+        }
+
+        function openEntradaModal(id, name) {
+            document.getElementById('entrada-item-id').value = id;
+            document.getElementById('entrada-item-name').innerText = name;
+            openModal('entrada-modal');
+        }
+
+        function openEditModal(itemId) {
+            const item = items.find(i => i.id === itemId);
+            if (!item) return;
+            populateSelects();
+            document.getElementById('edit-item-id').value = item.id;
+            document.getElementById('edit-item-name').value = item.name;
+            document.getElementById('edit-item-code').value = item.code;
+            document.getElementById('edit-item-category').value = item.category_id;
+            document.getElementById('edit-item-currency').value = item.currency || 'ARS';
+            updatePriceFields('edit');
+            document.getElementById('edit-item-formula').value = item.formula_id || '';
+            document.getElementById('edit-item-desc').value = item.description || '';
+            document.getElementById('edit-item-quantity').value = item.quantity;
+            document.getElementById('edit-item-buy-price').value = item.buy_price || 0;
+            document.getElementById('edit-item-sale-price').value = item.sale_price || '';
+            openModal('edit-item-modal');
+        }
+
+        async function handleEditItem(e) {
+            e.preventDefault();
+            const id = document.getElementById('edit-item-id').value;
+            const name = document.getElementById('edit-item-name').value;
+            const code = document.getElementById('edit-item-code').value;
+            const catId = document.getElementById('edit-item-category').value;
+            if (!catId) { showError('Debe seleccionar una categoría'); return; }
+            const description = document.getElementById('edit-item-desc').value;
+            const quantity = parseInt(document.getElementById('edit-item-quantity').value);
+            const currency = document.getElementById('edit-item-currency').value;
+            const formulaId = document.getElementById('edit-item-formula').value || null;
+            const buyPrice = parseFloat(document.getElementById('edit-item-buy-price').value) || 0;
+            const salePrice = parseFloat(document.getElementById('edit-item-sale-price').value) || null;
+
+            const { error } = await db.from('items').update({
+                name, code, category_id: catId, description, quantity, buy_price: buyPrice, sale_price: salePrice,
+                currency: currency, formula_id: formulaId
+            }).eq('id', id);
+
+            if (error) return showError(error.message);
+
+            closeModal('edit-item-modal');
+            showToast('Equipo actualizado con éxito');
+            await fetchItems();
+            renderInventory();
+            populateSelects();
+        }
+
+        // --- FORMULA MANAGEMENT ---
+        let formulas = [];
+        let dollarRate = parseFloat(localStorage.getItem('dollarRate') || '0');
+
+        function addMultiplierField() {
+            const container = document.getElementById('multipliers-container');
+            const div = document.createElement('div');
+            div.className = 'multiplier-field';
+            if (div) {
+                div.style.display = 'flex';
+                div.style.gap = '0.5rem';
+                div.style.marginBottom = '0.5rem';
+            }
+            div.innerHTML = `
+                <input type="text" placeholder="Etiqueta (ej: IVA)" class="m-label">
+                <input type="number" placeholder="Valor (ej: 1.21)" class="m-value" step="0.01">
+                <button type="button" class="btn btn-secondary" onclick="this.parentElement.remove()">X</button>
+            `;
+            container.appendChild(div);
+        }
+
+        async function handleSaveFormula(e) {
+            e.preventDefault();
+            const name = document.getElementById('new-formula-name').value;
+            const currency = document.getElementById('new-formula-currency').value;
+            const multipliers = Array.from(document.querySelectorAll('.multiplier-field')).map(f => ({
+                label: f.querySelector('.m-label').value,
+                value: parseFloat(f.querySelector('.m-value').value)
+            }));
+            
+            const { error } = await db.from('price_formulas').insert({ name, currency, multipliers });
+            if (error) return showError(error.message);
+            
+            showToast('Fórmula guardada');
+            await fetchFormulas();
+            renderFormulas();
+            e.target.reset();
+            document.getElementById('multipliers-container').innerHTML = '';
+        }
+
+        function renderFormulas() {
+            const list = document.getElementById('formula-list');
+            list.innerHTML = formulas.map(f => `
+                <div class="card" style="margin-bottom: 0.5rem; padding: 1rem;">
+                    <strong>${f.name} (${f.currency})</strong>
+                    <p>${f.multipliers.map(m => `${m.label}: ${m.value}`).join(', ')}</p>
+                    <button class="btn btn-secondary" onclick="deleteFormula('${f.id}')">Eliminar</button>
+                </div>
+            `).join('');
+        }
+
+        async function deleteFormula(id) {
+            const { error } = await db.from('price_formulas').delete().eq('id', id);
+            if (error) return showError(error.message);
+            await fetchFormulas();
+            renderFormulas();
+        }
+
+        function updatePriceFields(prefix) {
+            const currency = document.getElementById(`${prefix}-item-currency`).value;
+            document.getElementById(`${prefix}-item-buy-price-label`).innerText = `Precio de compra (${currency})`;
+            
+            const formulaSelect = document.getElementById(`${prefix}-item-formula`);
+            formulaSelect.innerHTML = '<option value="">Seleccionar fórmula</option>' + 
+                formulas.filter(f => f.currency === currency).map(f => `<option value="${f.id}">${f.name}</option>`).join('');
+            
+            calculateSalePrice(prefix);
+        }
+
+        function calculateSalePrice(prefix) {
+            const currency = document.getElementById(`${prefix}-item-currency`).value;
+            const formulaId = document.getElementById(`${prefix}-item-formula`).value;
+            const buyPrice = parseFloat(document.getElementById(`${prefix}-item-buy-price`).value) || 0;
+            const formula = formulas.find(f => f.id === formulaId);
+            
+            let salePrice = buyPrice;
+            if (formula) {
+                const multipliers = formula.multipliers.reduce((acc, m) => acc * m.value, 1);
+                salePrice = buyPrice * multipliers;
+                if (currency === 'USD') {
+                    salePrice *= dollarRate;
+                }
+            }
+            
+            document.getElementById(`${prefix}-item-sale-price`).value = salePrice.toFixed(2);
+        }
+
+        function saveDollarRate() {
+            dollarRate = parseFloat(document.getElementById('dollar-rate-input').value);
+            localStorage.setItem('dollarRate', dollarRate);
+            showToast('Cotización guardada');
+        }
+
+        function generateItemCode(prefix) {
+            const catId = document.getElementById(`${prefix}-item-category`).value;
+            if (!catId) return;
+
+            const category = categories.find(c => c.id === catId);
+            if (!category) return;
+
+            // Take first 3 letters of category name in uppercase
+            const prefixCode = category.name.substring(0, 3).toUpperCase();
+            
+            // Count existing items in this category
+            const count = items.filter(i => i.category_id === catId).length;
+            
+            // New sequential number (count + 1) padded to 3 digits
+            const nextNumber = (count + 1).toString().padStart(3, '0');
+            
+            const generatedCode = `${prefixCode}-${nextNumber}`;
+            
+            // Only fill if the field is empty or if we are in "new" mode
+            // For "edit" mode, we might not want to overwrite it immediately if it already has a code,
+            // but the requirement says "automatically fill the code field with the generated code" 
+            // when user selects a category.
+            document.getElementById(`${prefix}-item-code`).value = generatedCode;
+        }
+
+        function showToast(msg, isError = false) {
+            const t = document.getElementById('toast');
+            if (!t) return;
+            t.innerText = msg;
+            if (t) t.style.backgroundColor = isError ? 'var(--decommissioned)' : 'var(--primary)';
+            t.classList.add('show');
+            setTimeout(() => {
+                t.classList.remove('show');
+                if (t) t.style.backgroundColor = '';
+            }, 3000);
+        }
+
+        function showError(msg) {
+            console.error(msg);
+            showToast("Error: " + msg, true);
+        }
+
+        function exportHistoryToCSV() {
+            const headers = ['Equipo', 'Tipo', 'Empleado', 'Fecha', 'Hora', 'Notas'];
+            const rows = movements.map(m => [
+                m.items?.name,
+                m.type === 'checkout' ? 'Salida' : 'Entrada',
+                m.employees?.name,
+                new Date(m.timestamp).toLocaleDateString(),
+                new Date(m.timestamp).toLocaleTimeString(),
+                `"${m.notes || ''}"`
+            ]);
+
+            const csvContent = [headers, ...rows].map(r => r.join(',')).join('\n');
+            downloadCSV(csvContent, 'historial_movimientos.csv');
+        }
+
+        function exportInventoryToCSV() {
+            const headers = ['Nombre', 'Código', 'Categoría', 'Estado', 'Poseedor Actual', 'Descripción'];
+            const rows = items.map(i => [
+                i.name,
+                i.code,
+                i.categories?.name || 'N/D',
+                statusMap[i.status] || i.status,
+                i.employees?.name || 'Bóveda',
+                `"${i.description || ''}"`
+            ]);
+
+            const csvContent = [headers, ...rows].map(r => r.join(',')).join('\n');
+            downloadCSV(csvContent, 'inventario_completo.csv');
+        }
+
+        function downloadCSV(content, filename) {
+            const blob = new Blob([content], { type: 'text/csv' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.setAttribute('hidden', '');
+            a.setAttribute('href', url);
+            a.setAttribute('download', filename);
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        }
+
+        function printQR() {
+            if (!currentItem) return;
+            
+            // Create a temporary div to generate a new QR code
+            const tempDiv = document.createElement('div');
+            const qrSize = 512;
+            new QRCode(tempDiv, {
+                text: currentItem.code,
+                width: qrSize,
+                height: qrSize,
+                colorDark: "#000000",
+                colorLight: "#ffffff"
+            });
+
+            // Wait for rendering
+            setTimeout(() => {
+                const qrCanvas = tempDiv.querySelector('canvas');
+                const qrImg = tempDiv.querySelector('img');
+                
+                let qrSource = null;
+                if (qrCanvas) {
+                    qrSource = qrCanvas;
+                } else if (qrImg && qrImg.src && qrImg.src.startsWith('data:')) {
+                    qrSource = qrImg;
+                }
+
+                if (qrSource) {
+                    // Create a final canvas to combine QR + Text
+                    const finalCanvas = document.createElement('canvas');
+                    const ctx = finalCanvas.getContext('2d');
+                    
+                    const padding = 40;
+                    const textSpace = 140;
+                    finalCanvas.width = qrSize + (padding * 2);
+                    finalCanvas.height = qrSize + textSpace + (padding * 2);
+                    
+                    // Draw white background
+                    ctx.fillStyle = '#ffffff';
+                    ctx.fillRect(0, 0, finalCanvas.width, finalCanvas.height);
+                    
+                    // Draw QR Code
+                    ctx.drawImage(qrSource, padding, padding, qrSize, qrSize);
+                    
+                    // Draw Text below
+                    ctx.fillStyle = '#000000';
+                    ctx.textAlign = 'center';
+                    
+                    // Item Name
+                    ctx.font = 'bold 38px Arial, sans-serif';
+                    ctx.fillText(currentItem.name, finalCanvas.width / 2, qrSize + padding + 60);
+                    
+                    // Item Code
+                    ctx.font = '32px monospace';
+                    ctx.fillText(currentItem.code, finalCanvas.width / 2, qrSize + padding + 110);
+                    
+                    // Trigger download
+                    const dataUrl = finalCanvas.toDataURL("image/png");
+                    const link = document.createElement('a');
+                    link.href = dataUrl;
+                    link.download = `QR_${currentItem.code}.png`;
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                } else {
+                    showToast("Error al generar la imagen del QR", true);
+                }
+            }, 300);
+        }
+
+        // --- EVENT LISTENERS ---
+
+        document.querySelectorAll('.nav-item').forEach(n => {
+            n.addEventListener('click', (e) => {
+                e.preventDefault();
+                showSection(n.dataset.section);
+            });
+        });
+
+        const searchInput = document.getElementById('search-input');
+        if (searchInput) searchInput.addEventListener('input', renderInventory);
+        
+        const catFilter = document.getElementById('category-filter');
+        if (catFilter) catFilter.addEventListener('change', renderInventory);
+        
+        const statusFilter = document.getElementById('status-filter');
+        if (statusFilter) statusFilter.addEventListener('change', renderInventory);
+        
+        const histEmpFilter = document.getElementById('history-employee-filter');
+        if (histEmpFilter) histEmpFilter.addEventListener('change', renderHistory);
+        
+        const histTypeFilter = document.getElementById('history-type-filter');
+        if (histTypeFilter) histTypeFilter.addEventListener('change', renderHistory);
+        
+        const histDateFrom = document.getElementById('history-date-from');
+        if (histDateFrom) histDateFrom.addEventListener('change', renderHistory);
+        
+        const histDateTo = document.getElementById('history-date-to');
+        if (histDateTo) histDateTo.addEventListener('change', renderHistory);
+        
+        const addItemForm = document.getElementById('add-item-form');
+        if (addItemForm) addItemForm.addEventListener('submit', handleAddItem);
+        
+        const salidaForm = document.getElementById('salida-form');
+        if (salidaForm) salidaForm.addEventListener('submit', handleSalidaSubmit);
+
+        const entradaForm = document.getElementById('entrada-form');
+        if (entradaForm) entradaForm.addEventListener('submit', handleEntradaSubmit);
+        
+        const manualMovementForm = document.getElementById('manual-movement-form');
+        if (manualMovementForm) manualMovementForm.addEventListener('submit', handleManualMovement);
+        
+        const editItemForm = document.getElementById('edit-item-form');
+        if (editItemForm) editItemForm.addEventListener('submit', handleEditItem);
+        
+        const addEmployeeForm = document.getElementById('add-employee-form');
+        if (addEmployeeForm) addEmployeeForm.addEventListener('submit', handleAddEmployee);
+        
+        const addCategoryForm = document.getElementById('add-category-form');
+        if (addCategoryForm) addCategoryForm.addEventListener('submit', handleAddCategory);
+        
+        const addFormulaForm = document.getElementById('add-formula-form');
+        if (addFormulaForm) addFormulaForm.addEventListener('submit', handleSaveFormula);
+        
+        const dollarRateInput = document.getElementById('dollar-rate-input');
+        if (dollarRateInput) {
+            dollarRateInput.value = dollarRate;
+            dollarRateInput.addEventListener('change', saveDollarRate);
+        }
+        
+        const startScanBtn = document.getElementById('start-scan-btn');
+        if (startScanBtn) startScanBtn.addEventListener('click', startScanner);
+        
+        const companyNameInput = document.getElementById('company-name-input');
+        if (companyNameInput) companyNameInput.addEventListener('input', (e) => {
+            const val = e.target.value;
+            updateCompanyNameUI(val);
+            localStorage.setItem('vault_app_name', val);
+            localStorage.setItem('vault_company_name', val);
+            const appNameInput = document.getElementById('app-name-input');
+            if (appNameInput) appNameInput.value = val;
+        });
+
+        const appNameInput = document.getElementById('app-name-input');
+        if (appNameInput) appNameInput.addEventListener('input', (e) => {
+            const val = e.target.value;
+            updateCompanyNameUI(val);
+            localStorage.setItem('vault_app_name', val);
+            localStorage.setItem('vault_company_name', val);
+            const companyNameInput = document.getElementById('company-name-input');
+            if (companyNameInput) companyNameInput.value = val;
+        });
+
+        const logoUpload = document.getElementById('logo-upload');
+        if (logoUpload) logoUpload.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    const base64 = event.target.result;
+                    localStorage.setItem('vault_app_logo', base64);
+                    updateLogoUI(base64);
+                    showToast("Logo actualizado");
+                };
+                reader.readAsDataURL(file);
+            }
+        });
+
+        // Start
+        init();
+
+    </script>
+</body>
+</html>

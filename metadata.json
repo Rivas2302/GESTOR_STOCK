@@ -1,0 +1,5 @@
+{
+  "name": "VaultStock Standalone",
+  "description": "Standalone stock management app for technical equipment.",
+  "requestFramePermissions": ["camera"]
+}
