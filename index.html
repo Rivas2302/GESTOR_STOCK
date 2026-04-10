@@ -423,7 +423,7 @@ INSERT INTO movements (item_id, type, employee_id, notes) VALUES
             position: fixed;
             inset: 0;
             background: var(--bg);
-            z-index: 9999;
+            z-index: 11000;
             display: none;
             flex-direction: column;
             align-items: center;
@@ -586,6 +586,9 @@ INSERT INTO movements (item_id, type, employee_id, notes) VALUES
                     <input type="password" id="login-password" placeholder="••••••••" required>
                 </div>
                 <button type="submit" class="btn btn-primary" style="width: 100%; margin-top: 1rem;">Iniciar Sesión</button>
+                <p style="margin-top: 1.5rem; font-size: 0.85rem; color: var(--text-dim);">
+                    ¿No tiene una cuenta? Contacte al administrador de su sistema para obtener acceso.
+                </p>
             </form>
         </div>
     </div>
@@ -1143,6 +1146,7 @@ INSERT INTO movements (item_id, type, employee_id, notes) VALUES
 
         // --- INITIALIZATION ---
         let db = null;
+        let realtimeChannels = [];
 
         if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
             const banner = document.getElementById('config-banner');
@@ -1176,51 +1180,78 @@ INSERT INTO movements (item_id, type, employee_id, notes) VALUES
         // --- CORE FUNCTIONS ---
 
         async function init() {
-            if (!db) return;
-            
-            // Check for active session
-            const { data: { session }, error: sessionError } = await db.auth.getSession();
-            if (sessionError || !session) {
-                document.getElementById('login-screen').style.display = 'flex';
+            if (!db) {
+                const banner = document.getElementById('config-banner');
+                if (banner) banner.style.display = 'flex';
                 return;
             }
-
-            // Hide login screen if session exists
-            document.getElementById('login-screen').style.display = 'none';
-
-            // Load app personalization
-            const savedAppName = localStorage.getItem('vault_app_name') || localStorage.getItem('vault_company_name');
-            if (savedAppName) {
-                const appNameInput = document.getElementById('app-name-input');
-                if (appNameInput) appNameInput.value = savedAppName;
-                
-                const companyNameInput = document.getElementById('company-name-input');
-                if (companyNameInput) companyNameInput.value = savedAppName;
-                
-                updateCompanyNameUI(savedAppName);
-            }
-
-            const savedLogo = localStorage.getItem('vault_app_logo');
-            if (savedLogo) {
-                updateLogoUI(savedLogo);
-            }
-
+            
             try {
-                await Promise.all([
-                    fetchEmployees(),
-                    fetchCategories(),
-                    fetchItems(),
-                    fetchMovements(),
-                    fetchFormulas()
-                ]);
+                // Check for active session
+                const { data: { session }, error: sessionError } = await db.auth.getSession();
                 
-                renderInventory();
-                renderReports();
-                renderFormulas();
-                populateSelects();
-                setupRealtime();
+                if (sessionError) {
+                    console.error("Session error:", sessionError);
+                    if (sessionError.message === "Failed to fetch") {
+                        showError("Error de conexión: No se pudo contactar con Supabase. Verifique la URL y su conexión.");
+                    }
+                    document.getElementById('login-screen').style.display = 'flex';
+                    return;
+                }
+
+                if (!session) {
+                    document.getElementById('login-screen').style.display = 'flex';
+                    return;
+                }
+
+                // Hide login screen if session exists
+                document.getElementById('login-screen').style.display = 'none';
+
+                // Load app personalization
+                const savedAppName = localStorage.getItem('vault_app_name') || localStorage.getItem('vault_company_name');
+                if (savedAppName) {
+                    const appNameInput = document.getElementById('app-name-input');
+                    if (appNameInput) appNameInput.value = savedAppName;
+                    
+                    const companyNameInput = document.getElementById('company-name-input');
+                    if (companyNameInput) companyNameInput.value = savedAppName;
+                    
+                    updateCompanyNameUI(savedAppName);
+                }
+
+                const savedLogo = localStorage.getItem('vault_app_logo');
+                if (savedLogo) {
+                    updateLogoUI(savedLogo);
+                }
+
+                try {
+                    await Promise.all([
+                        fetchEmployees(),
+                        fetchCategories(),
+                        fetchItems(),
+                        fetchMovements(),
+                        fetchFormulas()
+                    ]);
+                    
+                    renderInventory();
+                    renderReports();
+                    renderSettings();
+                    populateSelects();
+                    setupRealtime();
+                } catch (err) {
+                    console.error("Data fetch error:", err);
+                    if (err.message === "Failed to fetch") {
+                        showError("Error de red: No se pudieron cargar los datos de Supabase.");
+                    } else {
+                        showError("Error de inicialización: " + err.message);
+                    }
+                }
             } catch (err) {
-                showError("Error de inicialización: " + err.message);
+                console.error("Init error:", err);
+                document.getElementById('login-screen').style.display = 'flex';
+                if (err.message === "Failed to fetch") {
+                    showError("Error de conexión con Supabase. Verifique su URL.");
+                }
             }
         }
 
@@ -1234,14 +1265,28 @@ INSERT INTO movements (item_id, type, employee_id, notes) VALUES
                 btn.disabled = true;
                 btn.innerText = 'Iniciando sesión...';
                 
+                if (!db) {
+                    throw new Error("Supabase no está configurado. Por favor, complete SUPABASE_URL y SUPABASE_ANON_KEY.");
+                }
+
                 const { data, error } = await db.auth.signInWithPassword({ email, password });
                 
                 if (error) throw error;
                 
+                // Hide login screen
+                document.getElementById('login-screen').style.display = 'none';
+                // Show app container
+                document.querySelector('.app-container').style.display = 'flex';
+                
                 showToast("Sesión iniciada correctamente");
-                init(); // Re-initialize app
+                await init(); // Re-initialize app
             } catch (err) {
-                showToast("Error de inicio de sesión: " + err.message, true);
+                console.error("Login error:", err);
+                let msg = err.message;
+                if (msg === "Failed to fetch") {
+                    msg = "Error de conexión: No se pudo contactar con Supabase. Verifique su URL y conexión a internet.";
+                }
+                showToast(msg, true);
             } finally {
                 btn.disabled = false;
                 btn.innerText = 'Iniciar Sesión';
@@ -1249,13 +1294,25 @@ INSERT INTO movements (item_id, type, employee_id, notes) VALUES
         }
 
         async function handleLogout() {
-            if (!confirm("¿Está seguro de que desea cerrar sesión?")) return;
+            const ok = await confirmDelete("¿Está seguro de que desea cerrar sesión?");
+            if (!ok) return;
             
             try {
                 const { error } = await db.auth.signOut();
                 if (error) throw error;
                 
-                window.location.reload(); // Hard reload to clear state
+                const appContainer = document.querySelector('.app-container');
+                if (appContainer) appContainer.style.display = 'none';
+                
+                const loginScreen = document.getElementById('login-screen');
+                if (loginScreen) loginScreen.style.display = 'flex';
+                
+                items = [];
+                employees = [];
+                categories = [];
+                movements = [];
+                
+                showToast("Sesión cerrada correctamente");
             } catch (err) {
                 showToast("Error al cerrar sesión: " + err.message, true);
             }
@@ -1324,12 +1381,18 @@ INSERT INTO movements (item_id, type, employee_id, notes) VALUES
 
         function setupRealtime() {
             if (!db) return;
-            db.channel('public:items')
+            
+            // Remove existing channels to avoid duplicate listeners
+            realtimeChannels.forEach(c => db.removeChannel(c));
+            realtimeChannels = [];
+
+            const channelItems = db.channel('public:items')
                 .on('postgres_changes', { event: '*', schema: 'public', table: 'items' }, () => {
                     fetchItems().then(() => {
                         renderInventory();
                         renderReports();
-                        if (document.getElementById('settings').classList.contains('active')) renderSettings();
+                        const settingsEl = document.getElementById('settings');
+                        if (settingsEl && settingsEl.classList.contains('active')) renderSettings();
                         if (currentItem) {
                             const updated = items.find(i => i.id === currentItem.id);
                             if (updated) renderDetail(updated);
@@ -1337,26 +1400,31 @@ INSERT INTO movements (item_id, type, employee_id, notes) VALUES
                     });
                 })
                 .subscribe();
+            realtimeChannels.push(channelItems);
 
-            db.channel('public:employees')
+            const channelEmployees = db.channel('public:employees')
                 .on('postgres_changes', { event: '*', schema: 'public', table: 'employees' }, () => {
                     fetchEmployees().then(() => {
                         populateSelects();
-                        if (document.getElementById('settings').classList.contains('active')) renderSettings();
+                        const settingsEl = document.getElementById('settings');
+                        if (settingsEl && settingsEl.classList.contains('active')) renderSettings();
                     });
                 })
                 .subscribe();
+            realtimeChannels.push(channelEmployees);
 
-            db.channel('public:categories')
+            const channelCategories = db.channel('public:categories')
                 .on('postgres_changes', { event: '*', schema: 'public', table: 'categories' }, () => {
                     fetchCategories().then(() => {
                         populateSelects();
-                        if (document.getElementById('settings').classList.contains('active')) renderSettings();
+                        const settingsEl = document.getElementById('settings');
+                        if (settingsEl && settingsEl.classList.contains('active')) renderSettings();
                     });
                 })
                 .subscribe();
+            realtimeChannels.push(channelCategories);
 
-            db.channel('public:movements')
+            const channelMovements = db.channel('public:movements')
                 .on('postgres_changes', { event: '*', schema: 'public', table: 'movements' }, () => {
                     fetchMovements().then(() => {
                         renderHistory();
@@ -1364,6 +1432,7 @@ INSERT INTO movements (item_id, type, employee_id, notes) VALUES
                     });
                 })
                 .subscribe();
+            realtimeChannels.push(channelMovements);
         }
 
         // --- UI RENDERING ---
@@ -1394,6 +1463,9 @@ INSERT INTO movements (item_id, type, employee_id, notes) VALUES
                     </td>
                 </tr>
             `).join('');
+
+            // Render Formulas
+            renderFormulas();
         }
 
         function renderInventory() {
@@ -1856,7 +1928,8 @@ INSERT INTO movements (item_id, type, employee_id, notes) VALUES
 
         function showSection(id) {
             document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
-            document.getElementById(id).classList.add('active');
+            const targetSection = document.getElementById(id);
+            if (targetSection) targetSection.classList.add('active');
             
             document.querySelectorAll('.nav-item').forEach(n => {
                 if (n.dataset.section === id) n.classList.add('active');
@@ -2047,8 +2120,8 @@ INSERT INTO movements (item_id, type, employee_id, notes) VALUES
         }
 
         function closeModalOnOverlay(e) {
-            if (e.target.classList.contains('modal-overlay')) {
-                if (e.target) e.target.style.display = 'none';
+            if (e.target && e.target.classList && e.target.classList.contains('modal-overlay')) {
+                e.target.style.display = 'none';
             }
         }
 
