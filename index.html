@@ -98,6 +98,11 @@ INSERT INTO movements (item_id, type, employee_id, notes) VALUES
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>VaultStock - Gestión de Equipos</title>
+    <meta name="theme-color" content="#0f0f0f">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black">
+    <meta name="apple-mobile-web-app-title" content="VaultStock">
+    <link rel="manifest" href="manifest.json">
     <!-- Libraries -->
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" crossorigin></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" crossorigin></script>
@@ -2533,6 +2538,11 @@ INSERT INTO movements (item_id, type, employee_id, notes) VALUES
         // Start
         init();
 
+    </script>
+    <script>
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/service-worker.js');
+        }
     </script>
 </body>
 </html>
