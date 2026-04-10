@@ -2645,15 +2645,19 @@ INSERT INTO movements (item_id, type, employee_id, notes) VALUES
             showInstallBanner();
         });
 
-        function showInstallBanner() {
-            const installBanner = document.getElementById('pwa-install-banner');
-            if (!installBanner) return;
-            installBanner.style.display = 'flex';
-            installBanner.style.zIndex = '9999';
-            setTimeout(() => {
-                installBanner.style.transform = 'translateY(0)';
-            }, 10);
-        }
+function showInstallBanner() {
+    if (window.matchMedia('(display-mode: standalone)').matches) return;
+    if (localStorage.getItem('pwa_dismissed') === 'true') return;
+    const installBanner = document.getElementById('pwa-install-banner');
+    if (!installBanner) return;
+    installBanner.style.transform = 'translateY(100%)';
+    installBanner.style.display = 'flex';
+    requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+            installBanner.style.transform = 'translateY(0)';
+        });
+    });
+}
 
         document.addEventListener('DOMContentLoaded', () => {
             const installBtn = document.getElementById('pwa-install-btn');
