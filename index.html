@@ -2661,10 +2661,11 @@ INSERT INTO movements (item_id, type, employee_id, notes) VALUES
             const installBanner = document.getElementById('pwa-install-banner');
 
             if (installBtn) {
-                installBtn.addEventListener('click', () => {
+                installBtn.addEventListener('click', async () => {
                     if (!deferredPrompt) return;
                     deferredPrompt.prompt();
-                    deferredPrompt.userChoice.then(() => { deferredPrompt = null; });
+                    await deferredPrompt.userChoice;
+                    deferredPrompt = null;
                     installBanner.style.display = 'none';
                 });
             }
