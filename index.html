@@ -251,6 +251,30 @@ INSERT INTO movements (item_id, type, employee_id, notes) VALUES
             z-index: 100;
         }
 
+        #mobile-header {
+            display: none;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 1rem;
+            height: 60px;
+            border-bottom: 1px solid var(--border);
+            background: #111;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 99;
+        }
+        .header-left, .header-right { z-index: 1; }
+        .header-center {
+            position: absolute;
+            left: 0;
+            right: 0;
+            text-align: center;
+            font-weight: 600;
+            pointer-events: none;
+        }
+
         /* Components */
         .card {
             background: var(--card);
@@ -516,9 +540,10 @@ INSERT INTO movements (item_id, type, employee_id, notes) VALUES
         }
 
         @media (max-width: 768px) {
+            #mobile-header { display: flex; }
             .sidebar { display: none; }
             .bottom-nav { display: flex; }
-            .main-content { padding: 1rem; padding-bottom: 5rem; }
+            .main-content { padding: 1rem; padding-top: 70px; padding-bottom: 5rem; }
             .item-grid { grid-template-columns: 1fr; }
             .stats-grid { grid-template-columns: repeat(2, 1fr); }
             .modal { width: 95%; padding: 1rem; }
@@ -527,8 +552,11 @@ INSERT INTO movements (item_id, type, employee_id, notes) VALUES
             .inventory-header .btn { width: 100%; }
             .table-container { overflow-x: auto; }
             .nav-brand-text { display: none; }
+            #mobile-header .nav-brand-text { display: block !important; }
             .card { padding: 1rem; }
             .inventory-header h1 { font-size: 1.5rem; }
+            .personalization-card-grid { grid-template-columns: 1fr !important; gap: 1rem !important; }
+            .personalization-card-grid label { font-size: 0.75rem !important; }
         }
 
         @media (max-width: 480px) {
@@ -574,6 +602,21 @@ INSERT INTO movements (item_id, type, employee_id, notes) VALUES
     </style>
 </head>
 <body>
+    <header id="mobile-header">
+        <div class="header-left">
+            <div id="sidebar-logo-container" style="display: flex; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: 50%; overflow: hidden; flex-shrink: 0;">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 8V21H3V8M21 8L12 3L3 8M21 8L12 13L3 8M12 13V21"/></svg>
+            </div>
+        </div>
+        <div class="header-center">
+            <span class="nav-brand-text">VaultStock</span>
+        </div>
+        <div class="header-right">
+            <button class="btn btn-outline" onclick="handleLogout()" style="padding: 0.5rem;">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
+            </button>
+        </div>
+    </header>
 
     <div id="login-screen">
         <div class="login-card">
@@ -835,7 +878,7 @@ INSERT INTO movements (item_id, type, employee_id, notes) VALUES
                 <!-- Personalización -->
                 <div class="card">
                     <h2 style="margin-bottom: 1rem;">Personalización</h2>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem;">
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem;" class="personalization-card-grid">
                         <div class="input-group">
                             <label>Nombre de la Aplicación</label>
                             <input type="text" id="app-name-input" placeholder="Ej: VaultStock">
@@ -2494,6 +2537,35 @@ INSERT INTO movements (item_id, type, employee_id, notes) VALUES
             dollarRateInput.addEventListener('change', saveDollarRate);
         }
         
+        function updatePWAManifest(name, iconBase64) {
+            const manifest = {
+                "name": name || "VaultStock",
+                "short_name": name || "VaultStock",
+                "start_url": "/",
+                "display": "standalone",
+                "background_color": "#0f0f0f",
+                "theme_color": "#3b82f6",
+                "icons": [
+                    {
+                        "src": iconBase64 || "/icon-192.png",
+                        "sizes": "192x192",
+                        "type": "image/png"
+                    },
+                    {
+                        "src": iconBase64 || "/icon-512.png",
+                        "sizes": "512x512",
+                        "type": "image/png"
+                    }
+                ]
+            };
+            const blob = new Blob([JSON.stringify(manifest)], {type: 'application/json'});
+            const url = URL.createObjectURL(blob);
+            const manifestLink = document.querySelector('link[rel="manifest"]');
+            if (manifestLink) {
+                manifestLink.href = url;
+            }
+        }
+
         const startScanBtn = document.getElementById('start-scan-btn');
         if (startScanBtn) startScanBtn.addEventListener('click', startScanner);
         
@@ -2505,6 +2577,7 @@ INSERT INTO movements (item_id, type, employee_id, notes) VALUES
             localStorage.setItem('vault_company_name', val);
             const appNameInput = document.getElementById('app-name-input');
             if (appNameInput) appNameInput.value = val;
+            updatePWAManifest(val, localStorage.getItem('vault_app_logo'));
         });
 
         const appNameInput = document.getElementById('app-name-input');
@@ -2515,6 +2588,7 @@ INSERT INTO movements (item_id, type, employee_id, notes) VALUES
             localStorage.setItem('vault_company_name', val);
             const companyNameInput = document.getElementById('company-name-input');
             if (companyNameInput) companyNameInput.value = val;
+            updatePWAManifest(val, localStorage.getItem('vault_app_logo'));
         });
 
         const logoUpload = document.getElementById('logo-upload');
@@ -2527,6 +2601,7 @@ INSERT INTO movements (item_id, type, employee_id, notes) VALUES
                     localStorage.setItem('vault_app_logo', base64);
                     updateLogoUI(base64);
                     showToast("Logo actualizado");
+                    updatePWAManifest(localStorage.getItem('vault_app_name'), base64);
                 };
                 reader.readAsDataURL(file);
             }
@@ -2537,6 +2612,7 @@ INSERT INTO movements (item_id, type, employee_id, notes) VALUES
 
         // Start
         init();
+        updatePWAManifest(localStorage.getItem('vault_app_name'), localStorage.getItem('vault_app_logo'));
 
     </script>
     <script>
@@ -2560,42 +2636,46 @@ INSERT INTO movements (item_id, type, employee_id, notes) VALUES
     </div>
 
     <script>
-        let deferredPrompt;
-        const installBanner = document.getElementById('pwa-install-banner');
-        const installBtn = document.getElementById('pwa-install-btn');
-        const dismissBtn = document.getElementById('pwa-dismiss-btn');
+        let deferredPrompt = null;
 
         window.addEventListener('beforeinstallprompt', (e) => {
             e.preventDefault();
-            if (localStorage.getItem('pwa_dismissed') === 'true') return;
-            
+            if (window.matchMedia('(display-mode: standalone)').matches || localStorage.getItem('pwa_dismissed') === 'true') return;
             deferredPrompt = e;
+            showInstallBanner();
+        });
+
+        function showInstallBanner() {
+            const installBanner = document.getElementById('pwa-install-banner');
+            if (!installBanner) return;
             installBanner.style.display = 'flex';
+            installBanner.style.zIndex = '9999';
             setTimeout(() => {
                 installBanner.style.transform = 'translateY(0)';
             }, 10);
-        });
-
-        installBtn.addEventListener('click', async () => {
-            if (!deferredPrompt) return;
-            deferredPrompt.prompt();
-            const { outcome } = await deferredPrompt.userChoice;
-            console.log(`User response to the install prompt: ${outcome}`);
-            deferredPrompt = null;
-            hideBanner();
-        });
-
-        dismissBtn.addEventListener('click', () => {
-            localStorage.setItem('pwa_dismissed', 'true');
-            hideBanner();
-        });
-
-        function hideBanner() {
-            installBanner.style.transform = 'translateY(100%)';
-            setTimeout(() => {
-                installBanner.style.display = 'none';
-            }, 300);
         }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const installBtn = document.getElementById('pwa-install-btn');
+            const dismissBtn = document.getElementById('pwa-dismiss-btn');
+            const installBanner = document.getElementById('pwa-install-banner');
+
+            if (installBtn) {
+                installBtn.addEventListener('click', () => {
+                    if (!deferredPrompt) return;
+                    deferredPrompt.prompt();
+                    deferredPrompt.userChoice.then(() => { deferredPrompt = null; });
+                    installBanner.style.display = 'none';
+                });
+            }
+
+            if (dismissBtn) {
+                dismissBtn.addEventListener('click', () => {
+                    localStorage.setItem('pwa_dismissed', 'true');
+                    installBanner.style.display = 'none';
+                });
+            }
+        });
     </script>
 </body>
 </html>
