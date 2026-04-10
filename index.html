@@ -2544,5 +2544,58 @@ INSERT INTO movements (item_id, type, employee_id, notes) VALUES
             navigator.serviceWorker.register('/service-worker.js');
         }
     </script>
+    <!-- PWA Install Banner -->
+    <div id="pwa-install-banner" style="position: fixed; bottom: 0; left: 0; right: 0; background: #1a1a1a; padding: 1rem; border-top: 1px solid var(--border); display: none; align-items: center; justify-content: space-between; z-index: 10001; transform: translateY(100%); transition: transform 0.3s ease-in-out;">
+        <div style="display: flex; align-items: center; gap: 1rem;">
+            <div style="width: 48px; height: 48px; background: #3b82f6; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-weight: bold; color: white;">V</div>
+            <div>
+                <div style="font-weight: 600;">VaultStock</div>
+                <div style="font-size: 0.85rem; color: var(--text-dim);">Instalar aplicación</div>
+            </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 0.5rem;">
+            <button id="pwa-install-btn" class="btn btn-primary">Instalar</button>
+            <button id="pwa-dismiss-btn" class="btn btn-secondary" style="padding: 0.5rem;">✕</button>
+        </div>
+    </div>
+
+    <script>
+        let deferredPrompt;
+        const installBanner = document.getElementById('pwa-install-banner');
+        const installBtn = document.getElementById('pwa-install-btn');
+        const dismissBtn = document.getElementById('pwa-dismiss-btn');
+
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            if (localStorage.getItem('pwa_dismissed') === 'true') return;
+            
+            deferredPrompt = e;
+            installBanner.style.display = 'flex';
+            setTimeout(() => {
+                installBanner.style.transform = 'translateY(0)';
+            }, 10);
+        });
+
+        installBtn.addEventListener('click', async () => {
+            if (!deferredPrompt) return;
+            deferredPrompt.prompt();
+            const { outcome } = await deferredPrompt.userChoice;
+            console.log(`User response to the install prompt: ${outcome}`);
+            deferredPrompt = null;
+            hideBanner();
+        });
+
+        dismissBtn.addEventListener('click', () => {
+            localStorage.setItem('pwa_dismissed', 'true');
+            hideBanner();
+        });
+
+        function hideBanner() {
+            installBanner.style.transform = 'translateY(100%)';
+            setTimeout(() => {
+                installBanner.style.display = 'none';
+            }, 300);
+        }
+    </script>
 </body>
 </html>
